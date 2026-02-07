@@ -96,7 +96,12 @@ class SimulationBridge:
 
     def _swap_scene(self, scene_file: str) -> None:
         """Replace scene.xml with the specified scene file for loading."""
-        scene_src = self._bundle_dir / scene_file
+        # Look for custom scene in tracked scenes/ directory first, then in bundle
+        scenes_dir = Path(__file__).parent / "scenes"
+        scene_src = scenes_dir / scene_file
+        if not scene_src.exists():
+            scene_src = self._bundle_dir / scene_file
+
         scene_dst = self._bundle_dir / "scene.xml"
         scene_bak = self._bundle_dir / "scene_original.xml"
 
