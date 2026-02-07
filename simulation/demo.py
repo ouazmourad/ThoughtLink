@@ -301,6 +301,7 @@ def main():
     parser.add_argument("--trial", type=str, default=None, help="Path to a specific .npz trial file")
     parser.add_argument("--multi", action="store_true", help="Run multi-trial demo (one per label)")
     parser.add_argument("--robot", type=str, default="g1", choices=["g1", "go2"], help="Robot type")
+    parser.add_argument("--scene", type=str, default="factory", choices=["factory", "default"], help="Scene type (factory or default)")
     args = parser.parse_args()
 
     # Find data directory
@@ -341,7 +342,7 @@ def main():
         args.mock = True
 
     # Create bridge
-    bridge = SimulationBridge(decoder=decoder, robot=args.robot)
+    bridge = SimulationBridge(decoder=decoder, robot=args.robot, scene=args.scene)
 
     # Run selected mode
     if args.keyboard:

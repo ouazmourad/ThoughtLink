@@ -66,6 +66,7 @@ class SimulationBridge:
         forward_speed: float = 0.6,
         yaw_rate: float = 1.5,
         bundle_dir: str | None = None,
+        scene: str = "factory",
     ):
         self._decoder = decoder
         self._robot = robot
@@ -77,6 +78,14 @@ class SimulationBridge:
             bri_root = Path(__file__).parent / "bri" / "bundles" / f"{robot}_mjlab"
             bundle_dir = str(bri_root)
 
+        self._bundle_dir = Path(bundle_dir)
+        self._scene = scene
+        self._scene_swapped = False
+
+        # Swap scene.xml to factory_scene.xml if requested
+        if scene == "factory":
+            self._swap_scene("factory_scene.xml")
+
         self._controller = Controller(
             backend="sim",
             hold_s=hold_s,
@@ -84,6 +93,40 @@ class SimulationBridge:
             yaw_rate=yaw_rate,
             bundle_dir=bundle_dir,
         )
+
+    def _swap_scene(self, scene_file: str) -> None:
+        """Replace scene.xml with the specified scene file for loading."""
+        scene_src = self._bundle_dir / scene_file
+        scene_dst = self._bundle_dir / "scene.xml"
+        scene_bak = self._bundle_dir / "scene_original.xml"
+
+        if not scene_src.exists():
+            print(f"[SimBridge] Warning: {scene_file} not found, using default scene.")
+            return
+
+        # Backup original scene.xml if not already backed up
+        if scene_dst.exists() and not scene_bak.exists():
+            scene_dst.rename(scene_bak)
+        elif scene_dst.exists():
+            scene_dst.unlink()
+
+        # Copy factory scene as scene.xml
+        import shutil
+        shutil.copy2(str(scene_src), str(scene_dst))
+        self._scene_swapped = True
+        print(f"[SimBridge] Using {scene_file} as simulation scene.")
+
+    def _restore_scene(self) -> None:
+        """Restore the original scene.xml."""
+        if not self._scene_swapped:
+            return
+        scene_dst = self._bundle_dir / "scene.xml"
+        scene_bak = self._bundle_dir / "scene_original.xml"
+        if scene_bak.exists():
+            if scene_dst.exists():
+                scene_dst.unlink()
+            scene_bak.rename(scene_dst)
+            self._scene_swapped = False
 
     def start(self) -> None:
         """Start the MuJoCo simulation (opens viewer window)."""
@@ -100,6 +143,7 @@ class SimulationBridge:
             return
         print("[SimBridge] Stopping simulation...")
         self._controller.stop()
+        self._restore_scene()
         self._running = False
 
     def is_running(self) -> bool:
