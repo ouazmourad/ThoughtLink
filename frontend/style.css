@@ -863,6 +863,51 @@ body {
     letter-spacing: 0.5px;
 }
 
+/* Cancel Confirmation Overlay */
+.cancel-confirm-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(10, 14, 23, 0.92);
+    border: 2px solid #ef4444;
+    border-radius: 16px;
+    padding: 20px 28px;
+    font-family: var(--font-mono);
+    z-index: 20;
+    backdrop-filter: blur(8px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    animation: cancelPulse 1s ease-in-out infinite;
+}
+
+@keyframes cancelPulse {
+    0%, 100% { border-color: #ef4444; box-shadow: 0 0 12px rgba(239, 68, 68, 0.3); }
+    50% { border-color: #f87171; box-shadow: 0 0 24px rgba(239, 68, 68, 0.5); }
+}
+
+.cancel-confirm-text {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #ef4444;
+    text-align: center;
+}
+
+.cancel-confirm-hint {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-align: center;
+    letter-spacing: 0.5px;
+}
+
+.cancel-confirm-countdown {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #f87171;
+}
+
 /* Deployment Footer */
 .deploy-footer {
     position: fixed;

@@ -32,9 +32,11 @@ class RobotAction(Enum):
 class OrchestrationPhase(Enum):
     SELECTING_ACTION = "SELECTING_ACTION"
     SELECTING_LANDMARK = "SELECTING_LANDMARK"
+    SELECTING_ROBOT = "SELECTING_ROBOT"
 
 
 class OrchestrationAction(Enum):
+    SELECT_ROBOT = "SELECT_ROBOT"
     MOVE_TO = "MOVE_TO"
     CARRY_TO = "CARRY_TO"
     STACK_TO = "STACK_TO"
@@ -49,6 +51,10 @@ class OrchestrationState:
     phase: OrchestrationPhase = OrchestrationPhase.SELECTING_ACTION
     action_index: int = 0
     landmark_index: int = 0
+    # Robot selection
+    robot_ids: list = field(default_factory=list)
+    robot_cycle_index: int = 0
+    selected_robot_ids: set = field(default_factory=set)
 
 
 @dataclass
@@ -171,6 +177,11 @@ class GearStateMachine:
         gt = gesture.gesture_type
         bc = gesture.brain_class
 
+        # SELECTING_ROBOT phase has special Both-Fists quick-clench behavior
+        if self._orch.phase == OrchestrationPhase.SELECTING_ROBOT:
+            return self._handle_robot_selection_gesture(gesture, result)
+
+        # SELECTING_ACTION / SELECTING_LANDMARK phases
         # L/R fist quick clench -> cycle options
         if gt == GestureType.QUICK_CLENCH:
             if bc == "Right Fist":
@@ -190,7 +201,50 @@ class GearStateMachine:
                 else:
                     result["orchestration_event"] = "confirm"
 
-        # Both Fists double clench -> cancel
+        # Both Fists double clench -> cancel (also cancels active tasks)
+        elif gt == GestureType.DOUBLE_CLENCH:
+            if bc in ("Both Fists", "Both Firsts"):
+                self._orch_cancel()
+                result["orchestration_event"] = "cancel"
+
+        result["action"] = self.state.toggled_action or RobotAction.IDLE
+        return result
+
+    def _handle_robot_selection_gesture(self, gesture, result: dict) -> dict:
+        """Handle gestures in SELECTING_ROBOT phase."""
+        from .gesture import GestureType
+
+        gt = gesture.gesture_type
+        bc = gesture.brain_class
+
+        if gt == GestureType.QUICK_CLENCH:
+            if bc == "Right Fist":
+                n = max(len(self._orch.robot_ids), 1)
+                self._orch.robot_cycle_index = (self._orch.robot_cycle_index + 1) % n
+                result["orchestration_event"] = "cycle"
+            elif bc in ("Left Fist", "Left First"):
+                n = max(len(self._orch.robot_ids), 1)
+                self._orch.robot_cycle_index = (self._orch.robot_cycle_index - 1) % n
+                result["orchestration_event"] = "cycle"
+            elif bc in ("Both Fists", "Both Firsts"):
+                # Toggle selection for currently highlighted robot
+                if self._orch.robot_ids:
+                    rid = self._orch.robot_ids[self._orch.robot_cycle_index]
+                    if rid in self._orch.selected_robot_ids:
+                        self._orch.selected_robot_ids.discard(rid)
+                    else:
+                        self._orch.selected_robot_ids.add(rid)
+                result["orchestration_event"] = "toggle_robot"
+
+        elif gt == GestureType.HOLD_MEDIUM:
+            if bc in ("Both Fists", "Both Firsts"):
+                task = self._orch_confirm()
+                if task:
+                    result["orchestration_event"] = "dispatch"
+                    result["orchestration_task"] = task
+                else:
+                    result["orchestration_event"] = "confirm"
+
         elif gt == GestureType.DOUBLE_CLENCH:
             if bc in ("Both Fists", "Both Firsts"):
                 self._orch_cancel()
@@ -255,11 +309,15 @@ class GearStateMachine:
 
     def _enter_orchestration(self):
         """Reset orchestration state when entering ORCHESTRATE gear."""
-        self._orch = OrchestrationState()
+        robot_ids = self._orch.robot_ids
+        selected_robot_ids = self._orch.selected_robot_ids
+        self._orch = OrchestrationState(robot_ids=robot_ids, selected_robot_ids=selected_robot_ids)
 
     def _exit_orchestration(self):
         """Clean up when leaving ORCHESTRATE gear."""
-        self._orch = OrchestrationState()
+        robot_ids = self._orch.robot_ids
+        selected_robot_ids = self._orch.selected_robot_ids
+        self._orch = OrchestrationState(robot_ids=robot_ids, selected_robot_ids=selected_robot_ids)
 
     def _orch_cycle(self, direction: int):
         """Cycle current selection in orchestration by direction (-1 or +1)."""
@@ -269,12 +327,30 @@ class GearStateMachine:
             self._orch.landmark_index = (self._orch.landmark_index + direction) % len(self._landmarks)
 
     def _orch_confirm(self) -> Optional[dict]:
-        """Confirm current orchestration selection. Returns task dict if dispatching."""
+        """Confirm current orchestration selection. Returns task dict if dispatching.
+        Stays in ORCHESTRATE gear after dispatch (resets to SELECTING_ACTION).
+        """
         if self._orch.phase == OrchestrationPhase.SELECTING_ACTION:
-            self._orch.phase = OrchestrationPhase.SELECTING_LANDMARK
-            return None
+            action = ORCHESTRATION_ACTIONS[self._orch.action_index]
+            if action == OrchestrationAction.SELECT_ROBOT:
+                self._orch.phase = OrchestrationPhase.SELECTING_ROBOT
+                self._orch.robot_cycle_index = 0
+                return None
+            else:
+                self._orch.phase = OrchestrationPhase.SELECTING_LANDMARK
+                self._orch.landmark_index = 0
+                return None
+        elif self._orch.phase == OrchestrationPhase.SELECTING_ROBOT:
+            # Confirm robot selection
+            task = {
+                "action": "SELECT_ROBOT",
+                "selected_robot_ids": list(self._orch.selected_robot_ids),
+            }
+            # Back to action selection (stay in ORCHESTRATE)
+            self._orch.phase = OrchestrationPhase.SELECTING_ACTION
+            return task
         else:
-            # Dispatch task
+            # SELECTING_LANDMARK → dispatch task (stay in ORCHESTRATE)
             action = ORCHESTRATION_ACTIONS[self._orch.action_index]
             landmark = self._landmarks[self._orch.landmark_index]
             task = {
@@ -283,22 +359,33 @@ class GearStateMachine:
                 "action_index": self._orch.action_index,
                 "landmark_index": self._orch.landmark_index,
             }
-            # Reset to action selection
-            self._orch = OrchestrationState()
+            # Reset to action selection (keep gear on ORCHESTRATE)
+            self._orch.phase = OrchestrationPhase.SELECTING_ACTION
+            self._orch.landmark_index = 0
             return task
 
     def _orch_cancel(self):
-        """Cancel current orchestration selection — go back or reset."""
+        """Cancel current orchestration selection — go back or reset.
+        In SELECTING_ACTION phase, emits cancel event for control loop to cancel active tasks.
+        """
         if self._orch.phase == OrchestrationPhase.SELECTING_LANDMARK:
             self._orch.phase = OrchestrationPhase.SELECTING_ACTION
+        elif self._orch.phase == OrchestrationPhase.SELECTING_ROBOT:
+            self._orch.phase = OrchestrationPhase.SELECTING_ACTION
         else:
-            self._orch = OrchestrationState()
+            # Already in SELECTING_ACTION — preserve robot selection state
+            self._orch.action_index = 0
+            self._orch.landmark_index = 0
+
+    def set_robot_ids(self, robot_ids: list[str]):
+        """Set available robot IDs for orchestration robot selection."""
+        self._orch.robot_ids = robot_ids
 
     def get_orchestration_state(self) -> Optional[dict]:
         """Return orchestration state for frontend. None if not in ORCHESTRATE gear."""
         if self.state.gear != Gear.ORCHESTRATE:
             return None
-        return {
+        state = {
             "phase": self._orch.phase.value,
             "action_name": ORCHESTRATION_ACTIONS[self._orch.action_index].value,
             "action_index": self._orch.action_index,
@@ -307,6 +394,11 @@ class GearStateMachine:
             "actions": [a.value for a in ORCHESTRATION_ACTIONS],
             "landmarks": self._landmarks,
         }
+        if self._orch.phase == OrchestrationPhase.SELECTING_ROBOT:
+            state["robot_ids"] = self._orch.robot_ids
+            state["robot_cycle_index"] = self._orch.robot_cycle_index
+            state["selected_robot_ids"] = list(self._orch.selected_robot_ids)
+        return state
 
     def reset(self):
         """Reset state machine to defaults."""

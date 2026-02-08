@@ -32,6 +32,7 @@ class RobotManager:
         self.robots: list[Robot] = []
         self.state_machines: dict[str, GearStateMachine] = {}
         self.selected_index: int = 0
+        self.active_robot_ids: set[str] = set()  # robots targeted by orchestration tasks
         self._init_robots()
 
     def _init_robots(self):
@@ -48,6 +49,14 @@ class RobotManager:
             self.robots.append(robot)
             self.state_machines[cfg["id"]] = GearStateMachine()
         self.selected_index = 0
+        self.active_robot_ids = {_DEFAULT_ROBOTS[0]["id"]}
+
+    def set_active_robots(self, robot_ids: list[str]):
+        """Set which robots are targeted by orchestration tasks."""
+        if robot_ids:
+            self.active_robot_ids = set(robot_ids)
+        else:
+            self.active_robot_ids = {self.selected_robot.id}
 
     @property
     def selected_robot(self) -> Robot:
@@ -97,6 +106,7 @@ class RobotManager:
                 "gear": sm.state.gear.value,
                 "holding_item": robot.holding_item,
                 "selected": i == self.selected_index,
+                "active": robot.id in self.active_robot_ids,
                 "task": robot.task,
                 "color": robot.color,
                 "toggled_action": sm.state.toggled_action.value if sm.state.toggled_action else None,

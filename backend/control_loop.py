@@ -7,13 +7,13 @@ from pathlib import Path
 
 import numpy as np
 
-from .state_machine import GearStateMachine, RobotAction, Gear
+from .state_machine import GearStateMachine, RobotAction, Gear, OrchestrationAction
 from .command_fusion import CommandFusion
 from .sim_bridge import SimBridge
 from .eeg_source import EEGReplaySource, TestEEGSource
 from .autopilot import Autopilot
 from .robot_manager import RobotManager
-from .gesture import GestureType
+from .gesture import GestureType, GestureEvent
 from voice.command_parser import CommandParser
 from .config import (
     EEG_DATA_DIR,
@@ -38,6 +38,8 @@ except ImportError:
     DECODER_AVAILABLE = False
     print("[ControlLoop] BrainDecoder not available — using demo mode")
 
+
+CANCEL_CONFIRM_TIMEOUT_S = 5.0
 
     # Map CommandParser action names to CommandFusion action names
 _VOICE_ACTION_MAP = {
@@ -90,6 +92,18 @@ class ControlLoop:
         # Per-robot autopilots
         self._autopilots: dict[str, Autopilot] = {}
 
+        # Sequential task queue (for logistics tasks on multiple robots)
+        self._sequential_tasks: list[dict] = []
+
+        # Cancel confirmation state
+        self._cancel_confirm_pending = False
+        self._cancel_confirm_time = 0.0
+
+        # Set robot IDs on all state machines for orchestration
+        robot_ids = [r.id for r in self.robot_manager.robots]
+        for sm in self.robot_manager.state_machines.values():
+            sm.set_robot_ids(robot_ids)
+
         # Metrics
         self.tick_count = 0
         self.latencies: list[float] = []
@@ -137,26 +151,84 @@ class ControlLoop:
                 })
 
     async def push_manual_command(self, action_str: str):
-        """Inject a manual command — executes directly on selected robot."""
+        """Inject a manual command. BCI-mapped actions route through the gesture/toggle
+        pipeline so the brain simulator and manual controls follow the same rules."""
         selected = self.robot_manager.selected_robot
         sm = self.robot_manager.selected_sm
 
-        if action_str == "SHIFT_GEAR":
-            sm.shift_gear()
+        # BCI-mapped actions → create synthetic gesture events
+        _BCI_MAP = {
+            "ROTATE_LEFT": ("Left Fist", GestureType.QUICK_CLENCH),
+            "ROTATE_RIGHT": ("Right Fist", GestureType.QUICK_CLENCH),
+            "BOTH_FISTS": ("Both Fists", GestureType.QUICK_CLENCH),
+            "SHIFT_GEAR": ("Tongue Tapping", GestureType.QUICK_CLENCH),
+            "ORCH_CONFIRM": ("Both Fists", GestureType.HOLD_MEDIUM),
+            "ORCH_CANCEL": ("Both Fists", GestureType.DOUBLE_CLENCH),
+        }
+
+        if action_str in _BCI_MAP:
+            brain_class, gesture_type = _BCI_MAP[action_str]
+            has_active_nav = any(ap.active for ap in self._autopilots.values())
+
+            # Double-clench Both during active nav → cancel confirmation flow
+            if (gesture_type == GestureType.DOUBLE_CLENCH and
+                    brain_class == "Both Fists" and
+                    (has_active_nav or self._cancel_confirm_pending)):
+                if self._cancel_confirm_pending:
+                    self._cancel_active_tasks()
+                    self._cancel_confirm_pending = False
+                    await self.broadcast({
+                        "type": "cancel_confirmed",
+                        "timestamp": time.time(),
+                    })
+                else:
+                    self._cancel_confirm_pending = True
+                    self._cancel_confirm_time = time.time()
+                    nav_descs = []
+                    for rid, ap in self._autopilots.items():
+                        if ap.active:
+                            nav_descs.append(f"NAV to {ap.target_name}")
+                    await self.broadcast({
+                        "type": "cancel_confirm_prompt",
+                        "description": "; ".join(nav_descs) if nav_descs else "active task",
+                        "timestamp": time.time(),
+                    })
+                return
+
+            duration = 2.5 if gesture_type == GestureType.HOLD_MEDIUM else 0.5
+            gesture = GestureEvent(gesture_type, brain_class, duration)
+            result = sm.handle_gesture(gesture)
+            action = result["action"]
+
+            # Handle orchestration dispatch from manual controls
+            if result.get("orchestration_task"):
+                await self._dispatch_orchestration_task(result["orchestration_task"])
+
+            # Handle orchestration cancel from manual controls (no active nav)
+            if result.get("orchestration_event") == "cancel":
+                self._cancel_active_tasks()
+
+            self.sim.execute(action, selected.id)
+            sm.state.current_action = action
             return
-        if action_str == "BOTH_FISTS":
-            action = sm.resolve_brain_command("Both Fists")
-        else:
-            action_map = {
-                "MOVE_FORWARD": RobotAction.MOVE_FORWARD,
-                "MOVE_BACKWARD": RobotAction.MOVE_BACKWARD,
-                "ROTATE_LEFT": RobotAction.ROTATE_LEFT,
-                "ROTATE_RIGHT": RobotAction.ROTATE_RIGHT,
-                "STOP": RobotAction.STOP,
-                "GRAB": RobotAction.GRAB,
-                "RELEASE": RobotAction.RELEASE,
-            }
-            action = action_map.get(action_str, RobotAction.IDLE)
+
+        # STOP / RELAX → clear toggled action and stop
+        if action_str in ("STOP", "RELAX"):
+            sm.state.toggled_action = None
+            sm.state.toggled_class = None
+            action = RobotAction.IDLE
+            self.sim.execute(action, selected.id)
+            sm.state.current_action = action
+            return
+
+        # Direct actions (GRAB, RELEASE, MOVE_FORWARD, etc.) → execute directly
+        action_map = {
+            "MOVE_FORWARD": RobotAction.MOVE_FORWARD,
+            "MOVE_BACKWARD": RobotAction.MOVE_BACKWARD,
+            "GRAB": RobotAction.GRAB,
+            "RELEASE": RobotAction.RELEASE,
+        }
+        action = action_map.get(action_str, RobotAction.IDLE)
         self.sim.execute(action, selected.id)
         sm.state.current_action = action
 
@@ -204,7 +276,7 @@ class ControlLoop:
         return {"ok": True, "target": canonical_name, "x": tx, "y": ty}
 
     def cancel_nav(self, robot_id: str | None = None):
-        """Cancel any active autopilot navigation."""
+        """Cancel any active autopilot navigation and stop the robot."""
         if robot_id is None:
             robot_id = self.robot_manager.selected_robot.id
         ap = self._autopilots.get(robot_id)
@@ -212,6 +284,96 @@ class ControlLoop:
             ap.cancel()
             print(f"[ControlLoop] Navigation cancelled for {robot_id}")
         self._autopilots.pop(robot_id, None)
+        # Stop the robot and clear toggled action
+        self.sim.execute(RobotAction.IDLE, robot_id)
+        sm = self.robot_manager.state_machines.get(robot_id)
+        if sm:
+            sm.state.toggled_action = None
+            sm.state.toggled_class = None
+            sm.state.current_action = RobotAction.IDLE
+
+    def _cancel_active_tasks(self):
+        """Cancel all active autopilots and stop all affected robots."""
+        cancelled_ids = []
+        for robot_id in list(self._autopilots.keys()):
+            ap = self._autopilots[robot_id]
+            if ap.active:
+                ap.cancel()
+                cancelled_ids.append(robot_id)
+                print(f"[ControlLoop] Cancelled task for {robot_id}")
+            self._autopilots.pop(robot_id, None)
+        self._sequential_tasks.clear()
+        # Stop robots and clear state
+        for r in self.robot_manager.robots:
+            r.task = None
+        for robot_id in cancelled_ids:
+            self.sim.execute(RobotAction.IDLE, robot_id)
+            sm = self.robot_manager.state_machines.get(robot_id)
+            if sm:
+                sm.state.toggled_action = None
+                sm.state.toggled_class = None
+                sm.state.current_action = RobotAction.IDLE
+        # Reset fusion state so no stale gesture re-triggers movement
+        self.fusion.reset()
+
+    async def _dispatch_orchestration_task(self, task: dict):
+        """Dispatch an orchestration task to active robots."""
+        task_action = task.get("action", "")
+
+        # SELECT_ROBOT → update active robot IDs
+        if task_action == "SELECT_ROBOT":
+            selected_ids = task.get("selected_robot_ids", [])
+            self.robot_manager.set_active_robots(selected_ids)
+            names = ", ".join(selected_ids) if selected_ids else "none"
+            print(f"[ControlLoop] Active robots: {names}")
+            await self.broadcast({
+                "type": "command_log",
+                "source": "system",
+                "action": f"ROBOTS: {names}",
+                "timestamp": time.time(),
+            })
+            return
+
+        # Navigation/logistics tasks → dispatch to all active robots
+        landmark = task.get("landmark", "")
+        active_ids = list(self.robot_manager.active_robot_ids)
+        is_logistics = task_action in ("CARRY_TO", "STACK_TO")
+
+        if is_logistics and len(active_ids) > 1:
+            # Sequential execution: start first, queue rest
+            first_id = active_ids[0]
+            nav_result = self.start_nav(landmark, first_id)
+            if nav_result.get("ok"):
+                robot = next((r for r in self.robot_manager.robots if r.id == first_id), None)
+                if robot:
+                    robot.task = task
+            # Queue remaining
+            for rid in active_ids[1:]:
+                self._sequential_tasks.append({
+                    "robot_id": rid,
+                    "landmark": landmark,
+                    "task": task,
+                })
+            await self.broadcast({
+                "type": "command_log",
+                "source": "system",
+                "action": f"ORCH: {task_action} → {landmark} ({len(active_ids)} robots, sequential)",
+                "timestamp": time.time(),
+            })
+        else:
+            # Simultaneous: start all at once
+            for rid in active_ids:
+                nav_result = self.start_nav(landmark, rid)
+                if nav_result.get("ok"):
+                    robot = next((r for r in self.robot_manager.robots if r.id == rid), None)
+                    if robot:
+                        robot.task = task
+            await self.broadcast({
+                "type": "command_log",
+                "source": "system",
+                "action": f"ORCH: {task_action} → {landmark} ({len(active_ids)} robots)",
+                "timestamp": time.time(),
+            })
 
     def full_reset(self):
         """Reset all subsystems to initial state."""
@@ -220,6 +382,8 @@ class ControlLoop:
         self.sim.reset()
         self._voice_queue.clear()
         self._autopilots.clear()
+        self._sequential_tasks.clear()
+        self._cancel_confirm_pending = False
         if self.eeg_source:
             self.eeg_source.reset()
         if self._test_eeg_source:
@@ -229,6 +393,10 @@ class ControlLoop:
         self._sim_brain_class = None
         self.latencies.clear()
         self.tick_count = 0
+        # Re-set robot IDs on all state machines
+        robot_ids = [r.id for r in self.robot_manager.robots]
+        for sm in self.robot_manager.state_machines.values():
+            sm.set_robot_ids(robot_ids)
         print("[ControlLoop] Full reset complete")
 
     async def tick(self):
@@ -315,9 +483,68 @@ class ControlLoop:
                         "timestamp": time.time(),
                     })
 
-        # 3. Determine action: autopilot takes priority when active
+        # 3. Always run fusion (gesture recognition must process brain signals even during autopilot)
+        fused = self.fusion.update(brain_result, voice_command)
         selected_autopilot = self._autopilots.get(selected.id)
+        has_active_nav = any(ap.active for ap in self._autopilots.values())
+
+        # Handle SELECT_SEQUENCE for robot selection (any time)
+        if (fused["source"] == "brain_gesture" and
+                fused.get("gesture_type") == "SELECT_SEQUENCE"):
+            direction = fused.get("select_direction")
+            if direction:
+                self.robot_manager.select_by_direction(direction)
+                self.fusion.sm = self.robot_manager.selected_sm
+
+        # 3b. Cancel confirmation flow (double-clench Both Fists during active nav)
+        is_double_clench_both = (
+            fused["source"] == "brain_gesture" and
+            fused.get("gesture_type") == "DOUBLE_CLENCH" and
+            fused.get("brain_class") in ("Both Fists", "Both Firsts")
+        )
+
+        cancel_handled = False
+        if is_double_clench_both and (has_active_nav or self._cancel_confirm_pending):
+            cancel_handled = True
+            if self._cancel_confirm_pending:
+                # Second double-clench → confirm cancellation
+                self._cancel_active_tasks()
+                self._cancel_confirm_pending = False
+                await self.broadcast({
+                    "type": "cancel_confirmed",
+                    "timestamp": time.time(),
+                })
+                await self.broadcast({
+                    "type": "command_log",
+                    "source": "system",
+                    "action": "NAV CANCELLED (brain)",
+                    "timestamp": time.time(),
+                })
+            else:
+                # First double-clench → show confirmation prompt
+                self._cancel_confirm_pending = True
+                self._cancel_confirm_time = time.time()
+                nav_descs = []
+                for rid, ap in self._autopilots.items():
+                    if ap.active:
+                        nav_descs.append(f"NAV to {ap.target_name}")
+                await self.broadcast({
+                    "type": "cancel_confirm_prompt",
+                    "description": "; ".join(nav_descs) if nav_descs else "active task",
+                    "timestamp": time.time(),
+                })
+
+        # Auto-dismiss cancel confirmation after timeout
+        if self._cancel_confirm_pending and (time.time() - self._cancel_confirm_time > CANCEL_CONFIRM_TIMEOUT_S):
+            self._cancel_confirm_pending = False
+            await self.broadcast({
+                "type": "cancel_confirm_dismiss",
+                "timestamp": time.time(),
+            })
+
+        # 3c. Determine action
         if selected_autopilot and selected_autopilot.active:
+            # Autopilot controls the robot
             robot_state_now = self.sim.get_state(selected.id)
             pos = robot_state_now.get("position", [0, 0, 0])
             yaw = robot_state_now.get("orientation", 0)
@@ -325,6 +552,7 @@ class ControlLoop:
             action_source = "autopilot"
 
             if selected_autopilot.arrived:
+                self._cancel_confirm_pending = False
                 await self.broadcast({
                     "type": "command_log",
                     "source": "system",
@@ -332,32 +560,23 @@ class ControlLoop:
                     "timestamp": time.time(),
                 })
         else:
-            # Normal fusion
-            fused = self.fusion.update(brain_result, voice_command)
+            # Normal: use fusion action
             action = fused["action"]
             action_source = fused["source"]
 
-            # Handle SELECT_SEQUENCE for robot selection
-            if (action_source == "brain_gesture" and
-                    fused.get("gesture_type") == "SELECT_SEQUENCE"):
-                direction = fused.get("select_direction")
-                if direction:
-                    self.robot_manager.select_by_direction(direction)
-                    # Re-point fusion to new selected SM
-                    self.fusion.sm = self.robot_manager.selected_sm
+            # Handle orchestration cancel (only if not already handled by cancel confirm)
+            if not cancel_handled and fused.get("orchestration_event") == "cancel":
+                self._cancel_active_tasks()
+                await self.broadcast({
+                    "type": "command_log",
+                    "source": "system",
+                    "action": "ORCH CANCEL",
+                    "timestamp": time.time(),
+                })
 
             # Handle orchestration task dispatch
             if fused.get("orchestration_task"):
-                task = fused["orchestration_task"]
-                nav_result = self.start_nav(task["landmark"])
-                if nav_result.get("ok"):
-                    selected.task = task
-                    await self.broadcast({
-                        "type": "command_log",
-                        "source": "system",
-                        "action": f"ORCH: {task['action']} → {task['landmark']}",
-                        "timestamp": time.time(),
-                    })
+                await self._dispatch_orchestration_task(fused["orchestration_task"])
 
         # 4. Execute on selected robot
         robot_state = self.sim.execute(action, selected.id)
@@ -403,6 +622,27 @@ class ControlLoop:
             })
             if not selected_autopilot.active:
                 self._autopilots.pop(selected.id, None)
+
+        # 6c. Process sequential task queue (logistics tasks one-by-one)
+        if self._sequential_tasks:
+            # Check if the current sequential robot has finished
+            next_task = self._sequential_tasks[0]
+            next_rid = next_task["robot_id"]
+            ap = self._autopilots.get(next_rid)
+            if not ap or not ap.active:
+                # Start next sequential task
+                self._sequential_tasks.pop(0)
+                nav_result = self.start_nav(next_task["landmark"], next_rid)
+                if nav_result.get("ok"):
+                    robot = next((r for r in self.robot_manager.robots if r.id == next_rid), None)
+                    if robot:
+                        robot.task = next_task.get("task")
+                    await self.broadcast({
+                        "type": "command_log",
+                        "source": "system",
+                        "action": f"SEQ: {next_rid} → {next_task['landmark']}",
+                        "timestamp": time.time(),
+                    })
 
         # 7. Broadcast EEG visualization data (every 10th tick = 1Hz)
         if self.tick_count % 10 == 0 and eeg_window is not None:

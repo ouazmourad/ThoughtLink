@@ -132,6 +132,16 @@ function handleServerMessage(msg) {
         case 'robot_selected':
             selectedRobot = msg.robot_id;
             break;
+        case 'cancel_confirm_prompt':
+            showCancelConfirm(msg.description);
+            break;
+        case 'cancel_confirmed':
+            hideCancelConfirm();
+            addLogEntry('system', 'CANCELLED', 'Action cancelled', Date.now() / 1000);
+            break;
+        case 'cancel_confirm_dismiss':
+            hideCancelConfirm();
+            break;
         case 'full_reset_ack':
             if (robotView) robotView.reset();
             tickCount = 0;
@@ -139,6 +149,7 @@ function handleServerMessage(msg) {
             currentToggledAction = null;
             updateSimBrainUI(null);
             updateToggleIndicator(null);
+            hideCancelConfirm();
             addLogEntry('system', 'FULL_RESET', 'Full system reset', Date.now() / 1000);
             break;
         default:
@@ -280,6 +291,7 @@ function updateToggleIndicator(toggledAction) {
 
 function updateOrchestrationOverlay(orch) {
     const overlay = document.getElementById('orchestration-overlay');
+    const hintEl = document.querySelector('.orch-hint');
     if (!overlay) return;
 
     if (!orch) {
@@ -292,16 +304,40 @@ function updateOrchestrationOverlay(orch) {
     const optionsEl = document.getElementById('orch-options');
 
     if (phaseEl) {
-        phaseEl.textContent = orch.phase === 'SELECTING_ACTION' ? 'SELECT ACTION' : 'SELECT LANDMARK';
+        if (orch.phase === 'SELECTING_ACTION') phaseEl.textContent = 'SELECT ACTION';
+        else if (orch.phase === 'SELECTING_LANDMARK') phaseEl.textContent = 'SELECT LANDMARK';
+        else if (orch.phase === 'SELECTING_ROBOT') phaseEl.textContent = 'SELECT ROBOTS';
+    }
+
+    if (hintEl) {
+        if (orch.phase === 'SELECTING_ROBOT') {
+            hintEl.textContent = 'L/R Fist: cycle | Both: toggle select | Hold Both 2s: confirm';
+        } else {
+            hintEl.textContent = 'L/R Fist: cycle | Both Fists 2s: confirm';
+        }
     }
 
     if (optionsEl) {
-        var items = orch.phase === 'SELECTING_ACTION' ? orch.actions : orch.landmarks;
-        var selectedIdx = orch.phase === 'SELECTING_ACTION' ? orch.action_index : orch.landmark_index;
         var html = '';
-        for (var i = 0; i < items.length; i++) {
-            var cls = i === selectedIdx ? 'orch-option selected' : 'orch-option';
-            html += '<div class="' + cls + '">' + items[i] + '</div>';
+        if (orch.phase === 'SELECTING_ROBOT') {
+            // Robot selection list with checkmarks
+            var robotIds = orch.robot_ids || [];
+            var cycleIdx = orch.robot_cycle_index || 0;
+            var selectedIds = orch.selected_robot_ids || [];
+            for (var i = 0; i < robotIds.length; i++) {
+                var isCursor = i === cycleIdx;
+                var isSelected = selectedIds.indexOf(robotIds[i]) >= 0;
+                var cls = 'orch-option' + (isCursor ? ' selected' : '');
+                var check = isSelected ? '\u2611 ' : '\u2610 ';
+                html += '<div class="' + cls + '">' + check + robotIds[i] + '</div>';
+            }
+        } else {
+            var items = orch.phase === 'SELECTING_ACTION' ? orch.actions : orch.landmarks;
+            var selectedIdx = orch.phase === 'SELECTING_ACTION' ? orch.action_index : orch.landmark_index;
+            for (var i = 0; i < items.length; i++) {
+                var cls = i === selectedIdx ? 'orch-option selected' : 'orch-option';
+                html += '<div class="' + cls + '">' + items[i] + '</div>';
+            }
         }
         optionsEl.innerHTML = html;
     }
@@ -401,6 +437,11 @@ function sendReset() {
 }
 
 function toggleControlMode() {
+    // Clean up any held BCI key when switching modes
+    if (_heldBCIKey !== null) {
+        simBrainStop();
+        _heldBCIKey = null;
+    }
     controlMode = controlMode === 'direct' ? 'bci' : 'direct';
     renderManualControls();
 }
@@ -423,11 +464,13 @@ function renderManualControls() {
             badge.classList.add('mode-bci');
         }
         grid.innerHTML =
-            '<div class="ctrl-btn" onclick="sendCommand(\'ROTATE_LEFT\')">L.FIST<span class="key-hint">A — Rot L</span></div>' +
-            '<div class="ctrl-btn accent" id="btn-both" onclick="sendCommand(\'BOTH_FISTS\')">BOTH<span class="key-hint">W — ' + getBothHint() + '</span></div>' +
-            '<div class="ctrl-btn" onclick="sendCommand(\'ROTATE_RIGHT\')">R.FIST<span class="key-hint">D — Rot R</span></div>' +
-            '<div class="ctrl-btn" onclick="sendCommand(\'SHIFT_GEAR\')">TONGUE<span class="key-hint">G — Shift</span></div>' +
-            '<div class="ctrl-btn" onclick="sendCommand(\'STOP\')">RELAX<span class="key-hint">S — Idle</span></div>' +
+            '<div class="ctrl-btn sim-btn" data-cls="1" onmousedown="simBrainStart(1)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()" ontouchstart="simBrainStart(1)" ontouchend="simBrainStop()">L.FIST<span class="key-hint">A — Rot L</span></div>' +
+            '<div class="ctrl-btn accent sim-btn" id="btn-both" data-cls="2" onmousedown="simBrainStart(2)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()" ontouchstart="simBrainStart(2)" ontouchend="simBrainStop()">BOTH<span class="key-hint">W — ' + getBothHint() + '</span></div>' +
+            '<div class="ctrl-btn sim-btn" data-cls="0" onmousedown="simBrainStart(0)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()" ontouchstart="simBrainStart(0)" ontouchend="simBrainStop()">R.FIST<span class="key-hint">D — Rot R</span></div>' +
+            '<div class="ctrl-btn sim-btn" data-cls="3" onmousedown="simBrainStart(3)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()" ontouchstart="simBrainStart(3)" ontouchend="simBrainStop()">TONGUE<span class="key-hint">G — Shift</span></div>' +
+            '<div class="ctrl-btn sim-btn" data-cls="4" onmousedown="simBrainStart(4)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()" ontouchstart="simBrainStart(4)" ontouchend="simBrainStop()">RELAX<span class="key-hint">S — Idle</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'ORCH_CONFIRM\')">CONFIRM<span class="key-hint">Enter</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'ORCH_CANCEL\')">CANCEL<span class="key-hint">Esc</span></div>' +
             '<div class="ctrl-btn" onclick="sendReset()">RESET<span class="key-hint">R</span></div>';
     } else {
         if (badge) {
@@ -592,6 +635,43 @@ function cancelNav() {
 }
 
 // ========================
+// Cancel Confirmation
+// ========================
+
+let _cancelConfirmTimer = null;
+
+function showCancelConfirm(description) {
+    var overlay = document.getElementById('cancel-confirm-overlay');
+    var textEl = document.getElementById('cancel-confirm-text');
+    var countdownEl = document.getElementById('cancel-confirm-countdown');
+    if (!overlay) return;
+
+    if (textEl) textEl.textContent = 'Cancel ' + (description || 'active task') + '?';
+    overlay.style.display = 'flex';
+
+    // Countdown timer (5 seconds)
+    var remaining = 5;
+    if (countdownEl) countdownEl.textContent = remaining + 's';
+    if (_cancelConfirmTimer) clearInterval(_cancelConfirmTimer);
+    _cancelConfirmTimer = setInterval(function() {
+        remaining--;
+        if (countdownEl) countdownEl.textContent = remaining + 's';
+        if (remaining <= 0) {
+            hideCancelConfirm();
+        }
+    }, 1000);
+}
+
+function hideCancelConfirm() {
+    var overlay = document.getElementById('cancel-confirm-overlay');
+    if (overlay) overlay.style.display = 'none';
+    if (_cancelConfirmTimer) {
+        clearInterval(_cancelConfirmTimer);
+        _cancelConfirmTimer = null;
+    }
+}
+
+// ========================
 // Robot Selection (click on map)
 // ========================
 
@@ -614,6 +694,8 @@ const ACTION_TO_BTN_TEXT = {
     'RELEASE': ['REL'],
     'SHIFT_GEAR': ['SHIFT', 'TONGUE'],
     'BOTH_FISTS': ['BOTH'],
+    'ORCH_CONFIRM': ['CONFIRM'],
+    'ORCH_CANCEL': ['CANCEL'],
 };
 
 function highlightButton(action, active) {
@@ -651,18 +733,28 @@ const KEY_MAP_DIRECT = {
     ' ': 'BOTH_FISTS',
 };
 
-const KEY_MAP_BCI = {
-    'w': 'BOTH_FISTS',        // Both Fists (gear-dependent)
-    'ArrowUp': 'BOTH_FISTS',
-    's': 'STOP',              // Relax -> idle
-    'ArrowDown': 'STOP',
-    'a': 'ROTATE_LEFT',       // Left Fist
-    'ArrowLeft': 'ROTATE_LEFT',
-    'd': 'ROTATE_RIGHT',      // Right Fist
-    'ArrowRight': 'ROTATE_RIGHT',
-    'g': 'SHIFT_GEAR',        // Tongue Tapping
-    ' ': 'BOTH_FISTS',
+// BCI mode: keys map to brain class indices for press-and-hold via simBrainStart/Stop
+const KEY_BCI_CLASS = {
+    'w': 2,            // Both Fists
+    'ArrowUp': 2,
+    's': 4,            // Relax
+    'ArrowDown': 4,
+    'a': 1,            // Left Fist
+    'ArrowLeft': 1,
+    'd': 0,            // Right Fist
+    'ArrowRight': 0,
+    'g': 3,            // Tongue Tapping
+    ' ': 2,            // Both Fists
 };
+
+// BCI one-shot commands (not press-and-hold)
+const KEY_BCI_ONESHOT = {
+    'Enter': 'ORCH_CONFIRM',
+    'Escape': 'ORCH_CANCEL',
+};
+
+// Track held BCI key to prevent key-repeat spam
+let _heldBCIKey = null;
 
 document.addEventListener('keydown', (e) => {
     // Don't capture if typing in an input
@@ -682,21 +774,53 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
-    var keyMap = controlMode === 'bci' ? KEY_MAP_BCI : KEY_MAP_DIRECT;
-
-    if (e.key in keyMap) {
-        e.preventDefault();
-        var action = keyMap[e.key];
-        sendCommand(action);
-        highlightButton(action, true);
+    if (controlMode === 'bci') {
+        // BCI mode: press-and-hold → simBrainStart/Stop (like brain simulator)
+        if (e.key in KEY_BCI_CLASS) {
+            e.preventDefault();
+            if (_heldBCIKey === e.key) return; // ignore key repeat
+            // Release previous key if different
+            if (_heldBCIKey !== null) {
+                simBrainStop();
+            }
+            _heldBCIKey = e.key;
+            simBrainStart(KEY_BCI_CLASS[e.key]);
+            return;
+        }
+        // One-shot BCI commands (Enter/Escape for orch confirm/cancel)
+        if (e.key in KEY_BCI_ONESHOT) {
+            e.preventDefault();
+            sendCommand(KEY_BCI_ONESHOT[e.key]);
+            highlightButton(KEY_BCI_ONESHOT[e.key], true);
+            return;
+        }
+    } else {
+        // Direct mode: instant commands
+        if (e.key in KEY_MAP_DIRECT) {
+            e.preventDefault();
+            var action = KEY_MAP_DIRECT[e.key];
+            sendCommand(action);
+            highlightButton(action, true);
+        }
     }
 });
 
 document.addEventListener('keyup', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    var keyMap = controlMode === 'bci' ? KEY_MAP_BCI : KEY_MAP_DIRECT;
-    if (e.key in keyMap) {
-        highlightButton(keyMap[e.key], false);
+
+    if (controlMode === 'bci') {
+        // Release BCI press-and-hold
+        if (e.key in KEY_BCI_CLASS && _heldBCIKey === e.key) {
+            _heldBCIKey = null;
+            simBrainStop();
+        }
+        if (e.key in KEY_BCI_ONESHOT) {
+            highlightButton(KEY_BCI_ONESHOT[e.key], false);
+        }
+    } else {
+        if (e.key in KEY_MAP_DIRECT) {
+            highlightButton(KEY_MAP_DIRECT[e.key], false);
+        }
     }
 });
 

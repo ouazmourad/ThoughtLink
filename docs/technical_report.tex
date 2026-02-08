@@ -1,0 +1,408 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small ThoughtLink --- Technical Report}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Title ─────────────────────────────────────────────────────────
+\title{
+    \vspace{-1cm}
+    \textbf{ThoughtLink} \\[0.3cm]
+    \large Closed-Loop Brain-to-Robot Control via \\
+    Non-Invasive EEG Decoding and Humanoid Simulation \\[0.5cm]
+    \normalsize Technical Report --- Kernel \& Dimensional VC Track
+}
+\author{
+    Joshua (ML Engineer) \quad
+    Mourad (Simulation Engineer) \quad
+    Dimitri (Full-Stack Developer)
+}
+\date{February 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+ThoughtLink decodes non-invasive brain signals (EEG) into discrete robot commands and demonstrates closed-loop brain-to-robot control in a MuJoCo humanoid simulation. The system processes 6-channel EEG recordings through a compact convolutional neural network (EEGNet, 12.6K parameters), applies temporal stabilisation for flicker suppression, and dispatches commands to a simulated G1 humanoid at 4\,Hz. A web dashboard provides real-time visualisation of the full pipeline. This report details the machine learning implementation, simulation bridge, and frontend/backend architecture.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════════
+% SECTION 1 — SYSTEM OVERVIEW (Dimitri / shared)
+% ══════════════════════════════════════════════════════════════════
+\section{System Overview}
+\label{sec:overview}
+
+% TODO: Dimitri — high-level architecture diagram, component interaction,
+% command mapping table, gear state machine description.
+
+\textit{Section to be completed.}
+
+% ══════════════════════════════════════════════════════════════════
+% SECTION 2 — DATASET
+% ══════════════════════════════════════════════════════════════════
+\section{Dataset}
+\label{sec:dataset}
+
+The dataset comprises 900 \texttt{.npz} recordings from 6 subjects across 20 sessions. Each file contains a 15-second trial with EEG sampled at 500\,Hz across 6 channels (shape $7499 \times 6$) and TD-fNIRS moment features (shape $72 \times 40 \times 3 \times 2 \times 3$, unused in this work). Five motor-imagery classes are perfectly balanced at 180 trials each.
+
+\begin{table}[H]
+\centering
+\caption{Class definitions and robot command mapping.}
+\label{tab:classes}
+\begin{tabular}{clll}
+\toprule
+\textbf{Index} & \textbf{Brain Label} & \textbf{Robot Command} & \textbf{Behaviour} \\
+\midrule
+0 & Right Fist     & \texttt{ROTATE\_RIGHT}  & Turn right \\
+1 & Left Fist      & \texttt{ROTATE\_LEFT}   & Turn left \\
+2 & Both Fists     & \texttt{STOP} / Gear-dep. & Halt / grab \\
+3 & Tongue Tapping & \texttt{FORWARD} / \texttt{SHIFT\_GEAR} & Walk / shift \\
+4 & Relax          & \texttt{IDLE}           & Stand still \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Trial durations: mean $10.0 \pm 0.48$\,s (range 8.4--11.3\,s). Stimulus onset occurs at $t = 3$\,s (sample 1500). Zero files were flagged as corrupted or malformed. Subject trial counts ranged from 90 to 180 per subject.
+
+% ══════════════════════════════════════════════════════════════════
+% SECTION 3 — ML PIPELINE (Joshua)
+% ══════════════════════════════════════════════════════════════════
+\section{Machine Learning Pipeline}
+\label{sec:ml}
+
+% ── 3.1 Preprocessing ────────────────────────────────────────────
+\subsection{Preprocessing}
+\label{sec:preprocessing}
+
+\paragraph{Bandpass filter.}
+A 4th-order Butterworth bandpass filter (1--40\,Hz) is applied per-channel using \texttt{scipy.signal.filtfilt} for zero-phase distortion. This passband captures the mu (8--12\,Hz), beta (13--30\,Hz), and theta (4--8\,Hz) rhythms associated with motor imagery while rejecting DC drift below 1\,Hz and high-frequency EMG artefacts above 40\,Hz.
+
+\paragraph{Normalisation.}
+Per-channel z-score normalisation ($\mu=0$, $\sigma=1$) is applied after filtering, with a guard condition ($\sigma < \epsilon \Rightarrow \sigma = 1$) to prevent division by zero on flat channels. A final \texttt{nan\_to\_num} pass removes any residual NaN or Inf values.
+
+\paragraph{Windowing.}
+Fixed 1-second windows (500 samples) are extracted at a 125-sample stride (0.25\,s):
+\begin{itemize}[nosep]
+    \item \textbf{Active classes} (0--3): Windows from the stimulus region, starting at sample 1500. Trials shorter than 2\,s are discarded.
+    \item \textbf{Relax} (class 4): Random non-overlapping windows from the full 15\,s signal ($\sim$20 per trial, seed-controlled for reproducibility).
+\end{itemize}
+This yields \textbf{13,100 windows} for binary and \textbf{28,772 windows} for 5-class classification.
+
+\paragraph{Data splitting.}
+A random stratified 80/10/10 split is used. An initial experiment with subject-based splitting (4 train / 1 val / 1 test out of 6 subjects) revealed severe cross-subject generalisation failure: training accuracy reached $\sim$60\% while validation accuracy remained at chance ($\sim$50\% binary, $\sim$20\% 5-class). The random split assumes a calibrated-per-subject deployment model, which is standard practice in BCI systems where per-user calibration data is available.
+
+% ── 3.2 Baseline Models ──────────────────────────────────────────
+\subsection{Baseline Models}
+\label{sec:baselines}
+
+Feature extraction uses Welch's PSD (nperseg=256) decomposed into four frequency bands per channel:
+
+\begin{equation}
+\mathbf{f} = \Big[\underbrace{P_\theta, P_\alpha, P_\mu, P_\beta}_{\text{4 bands}} \times \underbrace{6\text{ ch}}_{\text{= 24}}\Big] \oplus \Big[\underbrace{\tfrac{P_\mu}{P_\beta}}_{\text{6 ratios}}\Big] \oplus \Big[\underbrace{\text{Var}(x_{\text{ch}})}_{\text{6 variances}}\Big] = 36 \text{ features}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Baseline classifier accuracy (\%).}
+\label{tab:baselines}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{Binary} & \textbf{5-Class} \\
+\midrule
+Logistic Regression (balanced) & 51.1 & 20.4 \\
+SVM-RBF (balanced)             & 52.6 & 23.1 \\
+\midrule
+Chance level                   & 50.0 & 20.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both baselines barely exceed chance. Hand-crafted PSD features collapse the temporal structure of each 1-second window into summary statistics, discarding the sequential dynamics that distinguish motor imagery classes. This motivates learned convolutional features.
+
+% ── 3.3 EEGNet Architecture ──────────────────────────────────────
+\subsection{EEGNet Architecture}
+\label{sec:eegnet}
+
+The model adapts the EEGNet architecture \cite{lawhern2018eegnet}. Input shape: $(B, 1, 500, 6)$.
+
+\begin{table}[H]
+\centering
+\caption{EEGNet layer structure. $B$ = batch size.}
+\label{tab:architecture}
+\begin{tabular}{clll}
+\toprule
+\textbf{\#} & \textbf{Operation} & \textbf{Output} & \textbf{Notes} \\
+\midrule
+1 & Conv2d$(1, 32, (64,1))$ pad$(32,0)$        & $(B,32,500,1)$  & Temporal, kernel $= 128$\,ms \\
+2 & DepthwiseConv2d$(32, 64, (1,6))$ groups$=32$ & $(B,64,500,1)$  & Spatial filter \\
+3 & BN $\to$ ELU $\to$ AvgPool$(4,1)$ $\to$ Drop(0.3) & $(B,64,125,1)$ & Regularisation \\
+4 & SepConv2d$(64, 64, (16,1))$                  & $(B,64,125,1)$  & Depthwise + pointwise \\
+5 & BN $\to$ ELU $\to$ AvgPool$(8,1)$ $\to$ Drop(0.3) & $(B,64,15,1)$  & Second regularisation \\
+6 & Flatten $\to$ Linear$(960, C)$                & $(B, C)$        & $C \in \{2, 5\}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Total trainable parameters: \textbf{9,730} (binary) / \textbf{12,613} (5-class). The flat dimension (960) is computed dynamically via a dummy forward pass through the feature extractor.
+
+% ── 3.4 Training Protocol ────────────────────────────────────────
+\subsection{Training Protocol}
+\label{sec:training}
+
+\begin{table}[H]
+\centering
+\caption{Training hyperparameters.}
+\label{tab:hyperparams}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Optimiser           & AdamW \\
+Learning rate       & $1 \times 10^{-3}$ \\
+Weight decay        & $1 \times 10^{-4}$ \\
+Scheduler           & CosineAnnealingLR ($T_{\max}=100$) \\
+Batch size          & 64 \\
+Max epochs          & 100 \\
+Early stopping      & Patience = 25 epochs \\
+Loss                & CrossEntropyLoss (class-weighted, label smoothing $= 0.1$) \\
+Gradient clipping   & max\_norm $= 1.0$ \\
+Augmentation        & Gaussian noise ($\sigma = 0.05$) + amplitude scaling ($0.9$--$1.1\times$) \\
+Hardware            & NVIDIA RTX 3070 Ti (8\,GB) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Class weights are computed via inverse frequency to compensate for the Relax class having fewer extracted windows. Label smoothing at 0.1 prevents softmax saturation, which benefits the downstream confidence-gating mechanism by preserving calibrated uncertainty.
+
+% ── 3.5 Results ──────────────────────────────────────────────────
+\subsection{Results}
+\label{sec:results}
+
+\subsubsection{Binary Classification (Right Fist vs Left Fist)}
+
+\begin{table}[H]
+\centering
+\caption{Binary EEGNet results (9,730 parameters, 100 epochs).}
+\label{tab:binary_results}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Support} \\
+\midrule
+Right Fist & 0.621 & 0.688 & 0.653 & 654 \\
+Left Fist  & 0.651 & 0.581 & 0.614 & 656 \\
+\midrule
+\textbf{Overall accuracy} & \multicolumn{4}{c}{\textbf{63.4\%}} \\
+Best validation accuracy  & \multicolumn{4}{c}{63.5\% (epoch 96)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Confidence analysis: correct predictions averaged $0.662$ confidence vs $0.600$ for incorrect (gap = $0.062$). The narrow gap is a known property of label smoothing.
+
+\subsubsection{Five-Class Classification}
+
+\begin{table}[H]
+\centering
+\caption{Five-class EEGNet results (12,613 parameters, 93 epochs, early stopped).}
+\label{tab:5class_results}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Support} \\
+\midrule
+Right Fist     & 0.339 & 0.279 & 0.306 & 680 \\
+Left Fist      & 0.283 & 0.300 & 0.291 & 616 \\
+Both Fists     & 0.319 & 0.305 & 0.312 & 652 \\
+Tongue Tapping & \textbf{0.509} & \textbf{0.564} & \textbf{0.536} & 668 \\
+Relax          & 0.207 & 0.237 & 0.221 & 262 \\
+\midrule
+\textbf{Overall accuracy} & \multicolumn{4}{c}{\textbf{35.2\%}} \\
+Best validation accuracy  & \multicolumn{4}{c}{36.8\% (epoch 68)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Tongue Tapping is the most separable class (F1 $= 0.536$, recall $= 56.4\%$), likely because tongue movement produces distinct mu-desynchronisation patterns in central electrodes. Left/Right Fist form the most confused pair, consistent with overlapping contralateral motor cortex activations on a 6-channel montage. Relax is weakest (F1 $= 0.221$): the absence of motor imagery has no distinctive spectral signature at this channel resolution.
+
+Confusion matrix analysis reveals the largest off-diagonal mass between Right Fist, Left Fist, and Both Fists (the three motor imagery classes sharing overlapping cortical representations), while Tongue Tapping draws relatively few false positives.
+
+% ── 3.6 Analysis ─────────────────────────────────────────────────
+\subsection{Binary vs Multi-Class Decoding}
+\label{sec:binary_vs_multi}
+
+Binary decoding (63.4\%) substantially outperforms the corresponding 2-class subset from the 5-class model. The binary model concentrates its 9.7K parameter budget on a single decision boundary, while the 5-class model distributes 12.6K parameters across 10 pairwise boundaries.
+
+For robot control, a \textbf{hierarchical approach} is suggested: first classify Tongue Tapping vs motor imagery vs Relax (3-class, leveraging Tongue Tapping's separability), then refine motor imagery into Left/Right/Both. Per-class F1 scores suggest this would improve overall accuracy by 5--10\%. This was not implemented due to hackathon time constraints.
+
+\subsection{Temporal Context vs Instantaneous Prediction}
+\label{sec:temporal}
+
+Each prediction consumes a 1-second window (500 samples). The EEGNet temporal convolution kernel spans 128\,ms (64 samples), providing access to local temporal dynamics within each window but no cross-window context. At the 0.25\,s stride, the system produces 4 predictions per second.
+
+The \textbf{TemporalStabiliser} bridges the gap between noisy per-window predictions and stable robot commands via three cascaded mechanisms:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Confidence gating} (threshold $= 0.7$): Predictions below 70\% softmax confidence are suppressed to \texttt{IDLE}. In the 5-class model, mean correct confidence is 0.396---below the gate---so only the model's highest-conviction predictions pass through. This is intentional: missed commands are preferable to false triggers in robot control.
+    \item \textbf{Majority voting} (buffer $= 5$): A sliding deque of the last 5 high-confidence predictions. A class must win $\geq 3/5$ votes to be emitted, filtering transient spikes.
+    \item \textbf{Hysteresis} (count $= 3$): The voted class must appear 3 consecutive times before the system switches commands, adding $\sim$0.75\,s latency to transitions but eliminating inter-class oscillation.
+\end{enumerate}
+
+The combined effect: total latency from neural event to command switch is $\sim$1--2\,s. In closed-loop robot control, a 2-second jitter-free command is more operationally useful than sub-second noisy commands.
+
+\subsection{Confidence Thresholds and False-Trigger Suppression}
+\label{sec:confidence}
+
+\begin{table}[H]
+\centering
+\caption{Confidence distribution statistics.}
+\label{tab:confidence}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Binary} & \textbf{5-Class} \\
+\midrule
+Mean confidence (correct)   & 0.662 & 0.396 \\
+Mean confidence (incorrect) & 0.600 & 0.317 \\
+Confidence gap              & 0.062 & 0.079 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The 0.7 threshold aggressively gates the 5-class model: the majority of even correct predictions fall below it. In practice, only Tongue Tapping (with a long confidence tail reaching $> 0.7$) and occasional high-confidence motor imagery predictions pass. The robot therefore defaults to \texttt{IDLE}/\texttt{STOP} unless the brain signal is unambiguous.
+
+The 5-class confidence gap (0.079) is larger in relative terms than binary (0.062), indicating the model has calibrated uncertainty---it is measurably less confident when wrong. Label smoothing contributes to this by preventing softmax saturation, which is beneficial for the gating mechanism.
+
+\subsection{Model Complexity vs Inference Speed}
+\label{sec:latency}
+
+\begin{table}[H]
+\centering
+\caption{ONNX inference latency (ms), 1000 runs post-warmup.}
+\label{tab:latency}
+\begin{tabular}{lrcccc}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{CPU Mean} & \textbf{CPU P95} & \textbf{CUDA Mean} & \textbf{CUDA P95} \\
+\midrule
+Binary  & 9,730  & 0.43 & 0.51 & 0.90 & 1.74 \\
+5-Class & 12,613 & 0.46 & 0.59 & 0.92 & 1.15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key findings:
+\begin{itemize}[nosep]
+    \item \textbf{CPU outperforms CUDA} at this model scale. CPU--GPU memory transfer overhead dominates when the computation itself takes $< 0.5$\,ms. CUDA only benefits batch inference or larger architectures.
+    \item Adding 30\% more parameters (9.7K $\to$ 12.6K) incurs only \textbf{7\% additional latency} on CPU. The model is memory-bandwidth-bound, not compute-bound; doubling parameters would be nearly ``free'' in latency terms.
+    \item Both models are \textbf{well within the 10\,ms real-time budget}. The full BrainDecoder pipeline (preprocessing + ONNX inference + stabiliser) totals $\sim$3\,ms, leaving ample headroom within the 250\,ms window stride.
+    \item ONNX verification confirmed PyTorch-to-ONNX fidelity: maximum absolute output difference $< 1.2 \times 10^{-6}$.
+\end{itemize}
+
+% ── 3.7 Limitations ──────────────────────────────────────────────
+\subsection{Limitations and Future Work}
+\label{sec:limitations}
+
+\begin{description}[style=unboxed, leftmargin=0pt]
+    \item[Channel count.] Six EEG channels provide limited spatial resolution. Left/right motor imagery discrimination relies on contralateral differences over C3/C4; a denser montage or source localisation would likely improve the Left vs Right Fist boundary.
+    \item[Subject generalisation.] Subject-based splitting yielded chance-level performance ($\sim$50\% binary). The random split assumes per-subject calibration, acceptable for demonstration but not for zero-calibration deployment. Transfer learning and domain adaptation remain open research problems in BCI.
+    \item[Relax detection.] The weakest class (F1 $= 0.221$). ``Absence of motor imagery'' lacks a distinctive neural signature. A dedicated rest detector (e.g., alpha power threshold) may outperform the learned classifier for this class.
+    \item[Hierarchical classification.] Per-class results strongly suggest a two-stage approach: detect Tongue Tapping first (highest separability), then subclassify motor imagery. Not implemented due to time constraints, but estimated to yield 5--10\% improvement.
+\end{description}
+
+% ══════════════════════════════════════════════════════════════════
+% SECTION 4 — SIMULATION BRIDGE (Mourad)
+% ══════════════════════════════════════════════════════════════════
+\section{Simulation Bridge}
+\label{sec:simulation}
+
+% TODO: Mourad — MuJoCo integration, SimulationBridge class,
+% G1 humanoid model, action dispatch, latency measurements,
+% closed-loop demo results.
+
+\textit{Section to be completed.}
+
+% ══════════════════════════════════════════════════════════════════
+% SECTION 5 — BACKEND & API (Dimitri)
+% ══════════════════════════════════════════════════════════════════
+\section{Backend Architecture}
+\label{sec:backend}
+
+% TODO: Dimitri — FastAPI server, control loop, command fusion,
+% gear state machine, WebSocket protocol, REST endpoints.
+
+\textit{Section to be completed.}
+
+% ══════════════════════════════════════════════════════════════════
+% SECTION 6 — FRONTEND (Dimitri)
+% ══════════════════════════════════════════════════════════════════
+\section{Frontend Dashboard}
+\label{sec:frontend}
+
+% TODO: Dimitri — Vanilla JS dashboard, EEG chart, robot map view,
+% prediction panel, voice integration, debug controls.
+
+\textit{Section to be completed.}
+
+% ══════════════════════════════════════════════════════════════════
+% SECTION 7 — INTEGRATION & DEMO (shared)
+% ══════════════════════════════════════════════════════════════════
+\section{System Integration}
+\label{sec:integration}
+
+% TODO: Shared — end-to-end pipeline, integration points,
+% demo scenarios, full-system latency breakdown.
+
+\textit{Section to be completed.}
+
+% ══════════════════════════════════════════════════════════════════
+% SECTION 8 — CONCLUSION (shared)
+% ══════════════════════════════════════════════════════════════════
+\section{Conclusion}
+\label{sec:conclusion}
+
+% TODO: Shared — summary of contributions, key results,
+% what worked, what didn't, future directions.
+
+\textit{Section to be completed.}
+
+% ══════════════════════════════════════════════════════════════════
+% REFERENCES
+% ══════════════════════════════════════════════════════════════════
+\begin{thebibliography}{9}
+
+\bibitem{lawhern2018eegnet}
+V.~J. Lawhern, A.~J. Solon, N.~R. Waytowich, S.~M. Gordon, C.~P. Hung, and B.~J. Lance,
+``EEGNet: A compact convolutional neural network for EEG-based brain--computer interfaces,''
+\textit{Journal of Neural Engineering}, vol.~15, no.~5, p.~056013, 2018.
+
+\end{thebibliography}
+
+\end{document}
