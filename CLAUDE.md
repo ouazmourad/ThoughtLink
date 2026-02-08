@@ -13,6 +13,7 @@ ThoughtLink decodes non-invasive brain signals (EEG) into discrete robot command
 ## Project Structure
 ```
 ThoughtLink/
+├── .env                  # Environment variables (ELEVENLABS_API_KEY, etc.)
 ├── constants.py          # Shared constants — ALL modules import from here
 ├── training/             # [Joshua] ML pipeline
 │   ├── preprocessing.py  # EEGPreprocessor, DatasetBuilder
@@ -27,10 +28,32 @@ ThoughtLink/
 │   ├── bridge.py         # SimulationBridge class
 │   ├── demo.py           # Standalone closed-loop demo
 │   └── bri/              # Cloned brain-robot-interface repo
+├── voice/                # [Dimitri] Voice layer
+│   ├── config.py         # ElevenLabs API settings, cooldowns, feedback templates
+│   ├── command_parser.py # ParsedCommand + CommandParser (keyword/regex matching)
+│   ├── voice_input.py    # VoiceCommandListener — receives STT, queues commands
+│   └── tts_feedback.py   # VoiceFeedback — ElevenLabs TTS with priority/cooldown
 ├── backend/              # [Dimitri] FastAPI
-│   ├── main.py
-│   └── api/              # REST + WebSocket routes
+│   ├── main.py           # App entry, loads .env, mounts routers
+│   ├── requirements.txt  # Python dependencies
+│   ├── api/
+│   │   ├── routes.py     # REST endpoints (/api/status, /api/voice/command, etc.)
+│   │   └── websocket.py  # WebSocket at /ws (voice transcripts, actions, TTS audio)
+│   └── services/
+│       ├── simulation_service.py  # Wraps SimulationBridge (lazy-loads MuJoCo)
+│       └── voice_service.py       # Wraps voice module (parser + listener + TTS)
 └── frontend/             # [Dimitri] React + Vite + Tailwind
+    ├── src/
+    │   ├── App.jsx        # Main dashboard layout
+    │   ├── hooks/
+    │   │   ├── useWebSocket.js        # WebSocket connection + auto-reconnect
+    │   │   └── useVoiceRecognition.js  # Browser Web Speech API wrapper
+    │   └── components/
+    │       ├── StatusPanel.jsx   # Connection/sim/TTS status dots
+    │       ├── VoiceControl.jsx  # Mic button + transcript feed
+    │       ├── ControlPad.jsx    # Manual D-pad (FWD/LEFT/RIGHT/STOP)
+    │       └── ActionLog.jsx     # Live action log with color-coded badges
+    └── package.json
 ```
 
 ## Dataset
@@ -52,6 +75,8 @@ ThoughtLink/
 1. **Joshua → Mourad:** `training/predict.py::BrainDecoder` — Mourad imports this class in `simulation/bridge.py`
 2. **Joshua → Dimitri:** `training/` modules — Dimitri wraps them in `backend/services/`
 3. **Mourad → Dimitri:** `simulation/bridge.py::SimulationBridge` — Dimitri wraps in `backend/services/simulation_service.py`
+4. **Voice → Backend:** `voice/` module — wrapped by `backend/services/voice_service.py`, exposed via REST + WebSocket
+5. **Frontend → Backend:** React dashboard connects via WebSocket (`/ws`) for real-time voice + action updates
 
 ## How to Run
 
@@ -91,8 +116,15 @@ python -m training.export_onnx
 - `SMOOTHING_WINDOW = 5`
 - `HYSTERESIS_COUNT = 3`
 
+## Environment Variables (`.env` in project root)
+```
+ELEVENLABS_API_KEY=       # Required for TTS. Without it, voice feedback is text-only.
+ELEVENLABS_VOICE_ID=      # Optional. Defaults to "Rachel" (21m00Tcm4TlvDq8ikWAM).
+```
+
 ## Dependencies
 - Simulation: `mujoco>=3.4`, `onnxruntime`, `numpy`, `scipy`
 - Training: `torch` (CUDA), `scikit-learn`, `onnxruntime-gpu`, `matplotlib`
-- Backend: `fastapi`, `uvicorn`, `websockets`
+- Backend: `fastapi`, `uvicorn`, `websockets`, `requests`, `python-dotenv`
+- Voice: `requests` (ElevenLabs API calls)
 - Frontend: `react`, `vite`, `tailwindcss`, `recharts`
