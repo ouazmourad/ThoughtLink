@@ -15,6 +15,7 @@ from .autopilot import Autopilot
 from .robot_manager import RobotManager
 from .gesture import GestureType, GestureEvent
 from voice.command_parser import CommandParser, CommandSequence
+from voice.tts_feedback import VoiceFeedback
 from .config import (
     EEG_DATA_DIR,
     TICK_INTERVAL,
@@ -65,6 +66,9 @@ class ControlLoop:
         self.sim = SimBridge()
 
         self._voice_parser = CommandParser()
+
+        # Voice feedback (ElevenLabs TTS with cooldowns)
+        self.tts = VoiceFeedback()
 
         # Initialize EEG source
         try:
@@ -170,6 +174,16 @@ class ControlLoop:
                     "raw_text": seq.raw_text,
                     "target": cmd.target,
                 })
+            # Acknowledge navigation commands with TTS
+            if cmd.action == "NAVIGATE" and cmd.target:
+                await self._speak(
+                    f"Navigating to {cmd.target}", "voice_ack", priority=1
+                )
+            elif cmd.action in ("GRAB", "RELEASE", "STOP_ALL", "EMERGENCY_STOP"):
+                await self._speak(
+                    f"Command received: {cmd.action.replace('_', ' ').lower()}",
+                    "voice_ack", priority=1
+                )
 
     async def _load_action_queue(self, seq: CommandSequence):
         """Load a multi-step command sequence into the action queue."""
@@ -195,6 +209,10 @@ class ControlLoop:
             "timestamp": time.time(),
         })
         print(f"[ControlLoop] Loaded {len(steps)}-step voice sequence: {seq.raw_text}")
+        await self._speak(
+            f"Executing {len(steps)} step sequence: {seq.raw_text}",
+            "voice_ack", priority=1
+        )
         # Kick off the first step immediately
         await self._advance_action_queue()
 
@@ -280,6 +298,8 @@ class ControlLoop:
         action = action_map.get(action_str, RobotAction.IDLE)
         self.sim.execute(action, selected.id)
         sm.state.current_action = action
+        if action == RobotAction.BACKFLIP:
+            asyncio.ensure_future(self._speak("Backflip!", "general", priority=0))
 
     def set_test_mode(self, enabled: bool):
         """Enable/disable test EEG mode. Requires ONNX model loaded."""
@@ -354,6 +374,10 @@ class ControlLoop:
                 cancelled_ids.append(robot_id)
                 print(f"[ControlLoop] Cancelled task for {robot_id}")
             self._autopilots.pop(robot_id, None)
+        if cancelled_ids:
+            asyncio.ensure_future(self._speak(
+                f"Tasks cancelled for {', '.join(cancelled_ids)}", "nav_cancel", priority=0
+            ))
         self._sequential_tasks.clear()
         # Stop robots and clear state
         for r in self.robot_manager.robots:
@@ -397,6 +421,7 @@ class ControlLoop:
                 "action": f"ORCH: BACKFLIP ({len(active_ids)} robots)",
                 "timestamp": time.time(),
             })
+            await self._speak("Backflip!", "general", priority=0)
             return
 
         # Navigation/logistics tasks → dispatch to all active robots
@@ -425,6 +450,10 @@ class ControlLoop:
                 "action": f"ORCH: {task_action} → {landmark} ({len(active_ids)} robots, sequential)",
                 "timestamp": time.time(),
             })
+            await self._speak(
+                f"Dispatching {task_action.replace('_', ' ').lower()} to {landmark}, {len(active_ids)} robots sequentially",
+                "orch_dispatch", priority=1
+            )
         else:
             # Simultaneous: start all at once
             for rid in active_ids:
@@ -439,6 +468,10 @@ class ControlLoop:
                 "action": f"ORCH: {task_action} → {landmark} ({len(active_ids)} robots)",
                 "timestamp": time.time(),
             })
+            await self._speak(
+                f"Dispatching {task_action.replace('_', ' ').lower()} to {landmark}, {len(active_ids)} robots",
+                "orch_dispatch", priority=1
+            )
 
     async def _advance_action_queue(self):
         """Execute the next step in the action queue."""
@@ -521,6 +554,30 @@ class ControlLoop:
         for sm in self.robot_manager.state_machines.values():
             sm.set_robot_ids(robot_ids)
         print("[ControlLoop] Full reset complete")
+
+    async def _speak(self, text: str, event_type: str = "general", priority: int = 1):
+        """Synthesize TTS and broadcast to frontend.
+
+        Runs ElevenLabs synthesis in a thread so the async loop isn't blocked.
+        Falls back to browser speechSynthesis via the tts_request message.
+        """
+        try:
+            feedback = await asyncio.to_thread(self.tts.speak, text, event_type, priority)
+        except Exception:
+            feedback = None
+
+        if feedback is None:
+            return
+
+        msg = {
+            "type": "tts_request",
+            "text": feedback["text"],
+            "event_type": feedback["event_type"],
+            "timestamp": feedback["timestamp"],
+        }
+        if feedback.get("audio_base64"):
+            msg["audio_base64"] = feedback["audio_base64"]
+        await self.broadcast(msg)
 
     async def tick(self):
         """Single tick of the control loop."""
@@ -694,6 +751,10 @@ class ControlLoop:
                     "action": f"ARRIVED at {selected_autopilot.target_name}",
                     "timestamp": time.time(),
                 })
+                await self._speak(
+                    f"{selected.id} arrived at {selected_autopilot.target_name}",
+                    "nav_arrive", priority=1
+                )
                 # Advance the action queue if we were waiting for this arrival
                 if self._waiting_for_arrival and self._action_queue:
                     self._action_queue.pop(0)  # remove completed NAVIGATE step

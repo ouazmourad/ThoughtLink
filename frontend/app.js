@@ -212,9 +212,27 @@ function handleCommandLog(msg) {
 }
 
 function handleTTSRequest(msg) {
-    // Use browser speech synthesis as fallback
-    if ('speechSynthesis' in window && msg.text) {
-        const utterance = new SpeechSynthesisUtterance(msg.text);
+    if (!msg.text) return;
+
+    // Prefer ElevenLabs audio if available (base64 mp3)
+    if (msg.audio_base64) {
+        try {
+            const audio = new Audio('data:audio/mpeg;base64,' + msg.audio_base64);
+            audio.play().catch(() => {
+                // Autoplay blocked — fall back to browser speech
+                speakBrowser(msg.text);
+            });
+            return;
+        } catch (e) { /* fall through */ }
+    }
+
+    // Fallback: browser speech synthesis
+    speakBrowser(msg.text);
+}
+
+function speakBrowser(text) {
+    if ('speechSynthesis' in window && text) {
+        const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 1.2;
         utterance.pitch = 0.9;
         speechSynthesis.speak(utterance);

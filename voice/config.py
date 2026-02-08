@@ -26,6 +26,11 @@ COOLDOWNS = {
     "command_unclear": 3.0,
     "robot_error": 1.0,
     "general": 1.0,
+    "nav_start": 1.0,
+    "nav_arrive": 0.5,
+    "nav_cancel": 0.5,
+    "orch_dispatch": 1.0,
+    "emergency_stop": 0.0,
 }
 
 # === Feedback templates ===
