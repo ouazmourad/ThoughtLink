@@ -77,6 +77,7 @@ class ControlLoop:
         # Input enable flags
         self.brain_enabled = True
         self.voice_enabled = True
+        self.eeg_stream_enabled = True
 
         # Test mode
         self._test_mode = False
@@ -268,12 +269,13 @@ class ControlLoop:
             sm.state.current_action = action
             return
 
-        # Direct actions (GRAB, RELEASE, MOVE_FORWARD, etc.) → execute directly
+        # Direct actions (GRAB, RELEASE, MOVE_FORWARD, BACKFLIP, etc.) → execute directly
         action_map = {
             "MOVE_FORWARD": RobotAction.MOVE_FORWARD,
             "MOVE_BACKWARD": RobotAction.MOVE_BACKWARD,
             "GRAB": RobotAction.GRAB,
             "RELEASE": RobotAction.RELEASE,
+            "BACKFLIP": RobotAction.BACKFLIP,
         }
         action = action_map.get(action_str, RobotAction.IDLE)
         self.sim.execute(action, selected.id)
@@ -314,7 +316,10 @@ class ControlLoop:
             print(f"[ControlLoop] Unknown nav target: {target_name}")
             return {"ok": False, "error": f"Unknown landmark: {target_name}"}
         canonical_name, (tx, ty) = result
-        self._autopilots[robot_id] = Autopilot(canonical_name, (tx, ty))
+        # Get robot's current position for pathfinding
+        robot_state = self.sim.get_state(robot_id)
+        rpos = robot_state.get("position", [0, 0, 0])
+        self._autopilots[robot_id] = Autopilot(canonical_name, (tx, ty), start_xy=(rpos[0], rpos[1]))
 
         # Set gear to forward for walking
         sm = self.robot_manager.state_machines.get(robot_id, self.robot_manager.selected_sm)
@@ -377,6 +382,19 @@ class ControlLoop:
                 "type": "command_log",
                 "source": "system",
                 "action": f"ROBOTS: {names}",
+                "timestamp": time.time(),
+            })
+            return
+
+        # BACKFLIP → execute immediately on all active robots
+        if task_action == "BACKFLIP":
+            active_ids = list(self.robot_manager.active_robot_ids)
+            for rid in active_ids:
+                self.sim.execute(RobotAction.BACKFLIP, rid)
+            await self.broadcast({
+                "type": "command_log",
+                "source": "system",
+                "action": f"ORCH: BACKFLIP ({len(active_ids)} robots)",
                 "timestamp": time.time(),
             })
             return
@@ -495,6 +513,7 @@ class ControlLoop:
         if self._brain_decoder:
             self._brain_decoder.reset()
         self._sim_brain_class = None
+        self.eeg_stream_enabled = True
         self.latencies.clear()
         self.tick_count = 0
         # Re-set robot IDs on all state machines
@@ -516,7 +535,10 @@ class ControlLoop:
         eeg_window = None
         brain_result = None
 
-        if self._sim_brain_class is not None and self.brain_enabled:
+        if not self.eeg_stream_enabled:
+            # EEG stream disabled — no brain predictions, no waveform data
+            pass
+        elif self._sim_brain_class is not None and self.brain_enabled:
             # Brain simulator: bypass EEG + classifier, inject directly
             sim_cls = self._sim_brain_class
             brain_result = {
@@ -698,6 +720,10 @@ class ControlLoop:
 
         # 4. Execute on selected robot
         robot_state = self.sim.execute(action, selected.id)
+
+        # Sync holding state from simulation
+        if "holding" in robot_state:
+            selected_sm.state.holding_item = robot_state["holding"]
 
         # Sync robot manager state from sim
         self.robot_manager.update_robot_state(

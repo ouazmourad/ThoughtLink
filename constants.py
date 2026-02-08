@@ -101,9 +101,19 @@ FACTORY_WAYPOINTS = {
     "Table": (2.0, 1.5),
     "Pallet 1": (-1.5, 1.0),
     "Pallet 2": (1.5, 1.0),
+    "Charging Station": (-5.5, 3.5),
+    "Tool Cabinet": (5.5, -0.5),
+    "Storage Area": (-5.0, -3.5),
+    "Inspection Zone": (0.0, 4.5),
 }
-FACTORY_WAYPOINT_ORDER = ["Shelf A", "Shelf B", "Conveyor", "Table", "Pallet 1", "Pallet 2"]
-FACTORY_PATROL_ROUTE = ["Pallet 1", "Shelf A", "Conveyor", "Shelf B", "Table", "Pallet 2"]
+FACTORY_WAYPOINT_ORDER = [
+    "Shelf A", "Shelf B", "Conveyor", "Table", "Pallet 1", "Pallet 2",
+    "Charging Station", "Tool Cabinet", "Storage Area", "Inspection Zone",
+]
+FACTORY_PATROL_ROUTE = [
+    "Pallet 1", "Shelf A", "Conveyor", "Shelf B", "Table", "Pallet 2",
+    "Charging Station", "Tool Cabinet", "Storage Area", "Inspection Zone",
+]
 
 # Grabbable / pushable box geom names
 FACTORY_GRABBABLE_BOXES = [
@@ -134,16 +144,27 @@ FACTORY_OBSTACLE_GEOMS = [
     "bollard_1", "bollard_2", "bollard_3", "bollard_4",
     "sA_upright_FL", "sA_upright_FR",
     "sB_upright_FL", "sB_upright_FR",
+    "charging_station", "tool_cabinet",
+    "storage_rack", "inspection_table",
+    "boundary_wall_N", "boundary_wall_S", "boundary_wall_E", "boundary_wall_W",
 ]
 
 # Status light colors: action -> [r, g, b, a]
 STATUS_COLORS = {
-    "FORWARD": [0.0, 0.9, 0.0, 0.8],
-    "LEFT":    [0.0, 0.4, 1.0, 0.8],
-    "RIGHT":   [1.0, 0.0, 0.0, 0.8],
-    "STOP":    [1.0, 0.9, 0.0, 0.8],
-    "GRAB":    [0.7, 0.0, 1.0, 0.8],
+    "FORWARD":  [0.0, 0.9, 0.0, 0.8],
+    "BACKWARD": [0.0, 0.5, 0.0, 0.8],
+    "LEFT":     [0.0, 0.4, 1.0, 0.8],
+    "RIGHT":    [1.0, 0.0, 0.0, 0.8],
+    "STOP":     [1.0, 0.9, 0.0, 0.8],
+    "GRAB":     [0.7, 0.0, 1.0, 0.8],
+    "BACKFLIP": [1.0, 0.4, 0.0, 0.8],
 }
+
+# === Map Boundaries ===
+MAP_BOUNDARY_MIN_X = -7.5
+MAP_BOUNDARY_MAX_X = 7.5
+MAP_BOUNDARY_MIN_Y = -5.5
+MAP_BOUNDARY_MAX_Y = 7.5
 
 # === Gesture Recognition Timing ===
 QUICK_CLENCH_MAX_S = 1.5

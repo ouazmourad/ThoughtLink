@@ -204,6 +204,14 @@ async def _handle_client_message(message: dict, websocket: WebSocket):
             "timestamp": time.time(),
         })
 
+    elif msg_type == "toggle_eeg_stream":
+        _control_loop.eeg_stream_enabled = not _control_loop.eeg_stream_enabled
+        await broadcast({
+            "type": "eeg_stream_update",
+            "enabled": _control_loop.eeg_stream_enabled,
+            "timestamp": time.time(),
+        })
+
     elif msg_type == "select_robot":
         robot_id = message.get("robot_id", "")
         if robot_id:

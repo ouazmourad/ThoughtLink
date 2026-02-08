@@ -146,6 +146,14 @@ def _categorize(name: str, material: str, geom_type: str) -> str:
         return "box"
     if "bollard" in n:
         return "bollard"
+    if "charge" in n or "charging" in n:
+        return "charging_station"
+    if "cabinet" in n:
+        return "tool_cabinet"
+    if "storage" in n and "box" not in n:
+        return "storage_rack"
+    if "inspect" in n:
+        return "inspection_zone"
     if "box" in n or "box" in m:
         return "box"
 

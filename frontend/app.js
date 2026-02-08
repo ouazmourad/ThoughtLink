@@ -20,6 +20,7 @@ let currentAction = 'IDLE';
 let brainEnabled = true;
 let voiceEnabled = true;
 let testModeActive = false;
+let eegStreamEnabled = true;
 let simBrainClass = null;  // null = off, 0-4 = simulated class
 let controlMode = 'direct'; // 'direct' = explicit commands, 'bci' = gear-dependent brain schema
 let currentToggledAction = null;
@@ -122,6 +123,10 @@ function handleServerMessage(msg) {
             updateToggleButton('btn-brain', brainEnabled);
             updateToggleButton('btn-voice', voiceEnabled);
             break;
+        case 'eeg_stream_update':
+            eegStreamEnabled = msg.enabled;
+            updateToggleButton('btn-eeg-stream', eegStreamEnabled);
+            break;
         case 'nav_update':
             handleNavUpdate(msg);
             break;
@@ -149,6 +154,8 @@ function handleServerMessage(msg) {
             currentToggledAction = null;
             updateSimBrainUI(null);
             updateToggleIndicator(null);
+            eegStreamEnabled = true;
+            updateToggleButton('btn-eeg-stream', true);
             hideCancelConfirm();
             addLogEntry('system', 'FULL_RESET', 'Full system reset', Date.now() / 1000);
             break;
@@ -357,7 +364,7 @@ function updateActionOverlay(action, source) {
     if (source === 'autopilot') cls = 'navigating';
     else if (action === 'MOVE_FORWARD' || action === 'MOVE_BACKWARD') cls = 'moving';
     else if (action === 'ROTATE_LEFT' || action === 'ROTATE_RIGHT') cls = 'rotating';
-    else if (action === 'GRAB' || action === 'RELEASE') cls = 'grabbing';
+    else if (action === 'GRAB' || action === 'RELEASE' || action === 'HOLD') cls = 'grabbing';
     else if (action === 'STOP' || action === 'EMERGENCY_STOP') cls = 'stopped';
 
     el.className = 'action-overlay ' + cls;
@@ -450,7 +457,7 @@ function getBothHint() {
     if (currentGear === 'FORWARD') return 'FWD';
     if (currentGear === 'REVERSE') return 'BWD';
     if (currentGear === 'ORCHESTRATE') return 'Orch';
-    return 'Grab';
+    return 'Hold';
 }
 
 function renderManualControls() {
@@ -508,6 +515,10 @@ function toggleVoice() {
 
 function toggleTestMode() {
     wsSend({ type: 'toggle_test_mode' });
+}
+
+function toggleEEGStream() {
+    wsSend({ type: 'toggle_eeg_stream' });
 }
 
 function sendFullReset() {
@@ -849,6 +860,8 @@ window.addEventListener('DOMContentLoaded', () => {
     eegChart = new EEGChart('eeg-canvas');
     robotView = new RobotView('robot-canvas');
     voiceManager = new VoiceManager(handleVoiceTranscript);
+
+    // EEG panel always visible
 
     // Wire up robot click-to-select callback
     if (robotView) {

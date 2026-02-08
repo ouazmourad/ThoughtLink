@@ -129,6 +129,7 @@ class CommandFusion:
                 "ROTATE_RIGHT": RobotAction.ROTATE_RIGHT,
                 "GRAB": RobotAction.GRAB,
                 "RELEASE": RobotAction.RELEASE,
+                "BACKFLIP": RobotAction.BACKFLIP,
             }
 
             if action_str == "SHIFT_GEAR":

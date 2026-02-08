@@ -2,6 +2,7 @@
 
 import math
 from .state_machine import RobotAction
+from .pathfinding import PathPlanner
 
 import sys
 from pathlib import Path
@@ -11,6 +12,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from constants import FACTORY_WAYPOINTS, WAYPOINT_ARRIVAL_DIST, WAYPOINT_ALIGN_THRESHOLD
+
+
+_planner: PathPlanner | None = None
+
+def _get_planner() -> PathPlanner:
+    global _planner
+    if _planner is None:
+        _planner = PathPlanner()
+    return _planner
 
 
 # Aliases for fuzzy matching spoken landmark names
@@ -48,18 +58,41 @@ _LANDMARK_ALIASES = {
     "palette to": "Pallet 2",
     "shelf to": "Shelf B",
     "shelve to": "Shelf B",
+    "charging station": "Charging Station",
+    "charging": "Charging Station",
+    "charger": "Charging Station",
+    "charge": "Charging Station",
+    "tool cabinet": "Tool Cabinet",
+    "tools": "Tool Cabinet",
+    "cabinet": "Tool Cabinet",
+    "tool box": "Tool Cabinet",
+    "storage area": "Storage Area",
+    "storage": "Storage Area",
+    "storage rack": "Storage Area",
+    "inspection zone": "Inspection Zone",
+    "inspection": "Inspection Zone",
+    "inspect": "Inspection Zone",
+    "qc": "Inspection Zone",
 }
 
 
 class Autopilot:
     """Steers the robot toward a named waypoint using turn-then-walk control."""
 
-    def __init__(self, target_name: str, target_xy: tuple[float, float]):
+    def __init__(self, target_name: str, target_xy: tuple[float, float], start_xy: tuple[float, float] = (0, 0)):
         self.target_name = target_name
         self.target_x, self.target_y = target_xy
         self.active = True
         self.arrived = False
         self.distance = float("inf")
+
+        # Compute path with obstacle avoidance
+        planner = _get_planner()
+        self._waypoints = planner.find_path(start_xy, target_xy)
+        self._wp_index = 0
+        if not self._waypoints:
+            # Fallback: direct path
+            self._waypoints = [target_xy]
 
     def update(self, robot_xy, robot_yaw: float) -> RobotAction:
         """Compute next action given current robot pose. Called each tick."""
@@ -67,16 +100,35 @@ class Autopilot:
             return RobotAction.IDLE
 
         rx, ry = float(robot_xy[0]), float(robot_xy[1])
-        dx = self.target_x - rx
-        dy = self.target_y - ry
-        self.distance = math.sqrt(dx * dx + dy * dy)
 
-        if self.distance < WAYPOINT_ARRIVAL_DIST:
+        # Current waypoint
+        if self._wp_index >= len(self._waypoints):
             self.active = False
             self.arrived = True
             return RobotAction.STOP
 
-        # Desired heading to target
+        wx, wy = self._waypoints[self._wp_index]
+        dx = wx - rx
+        dy = wy - ry
+        wp_dist = math.sqrt(dx * dx + dy * dy)
+
+        # Check overall distance to final target
+        fdx = self.target_x - rx
+        fdy = self.target_y - ry
+        self.distance = math.sqrt(fdx * fdx + fdy * fdy)
+
+        # If close to current waypoint, advance to next
+        if wp_dist < WAYPOINT_ARRIVAL_DIST:
+            self._wp_index += 1
+            if self._wp_index >= len(self._waypoints):
+                self.active = False
+                self.arrived = True
+                return RobotAction.STOP
+            wx, wy = self._waypoints[self._wp_index]
+            dx = wx - rx
+            dy = wy - ry
+
+        # Desired heading to current waypoint
         desired_yaw = math.atan2(dy, dx)
 
         # Angle difference normalized to [-pi, pi]
@@ -86,7 +138,7 @@ class Autopilot:
         while angle_diff < -math.pi:
             angle_diff += 2 * math.pi
 
-        # Turn to face target, then walk forward
+        # Turn to face waypoint, then walk forward
         if abs(angle_diff) > WAYPOINT_ALIGN_THRESHOLD:
             return RobotAction.ROTATE_LEFT if angle_diff > 0 else RobotAction.ROTATE_RIGHT
         else:
@@ -104,6 +156,8 @@ class Autopilot:
             "target_y": self.target_y,
             "distance": round(self.distance, 2),
             "arrived": self.arrived,
+            "waypoints_total": len(self._waypoints),
+            "waypoints_remaining": max(0, len(self._waypoints) - self._wp_index),
         }
 
     @staticmethod
