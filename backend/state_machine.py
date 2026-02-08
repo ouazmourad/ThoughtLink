@@ -1,14 +1,20 @@
-"""Gear State Machine — core control logic for ThoughtLink."""
+"""Gear State Machine — core control logic for ThoughtLink.
+
+Supports toggle-based control via handle_gesture() and orchestration gear.
+"""
 
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+from constants import FACTORY_WAYPOINT_ORDER
 
 
 class Gear(Enum):
     NEUTRAL = "NEUTRAL"
     FORWARD = "FORWARD"
     REVERSE = "REVERSE"
+    ORCHESTRATE = "ORCHESTRATE"
 
 
 class RobotAction(Enum):
@@ -23,7 +29,26 @@ class RobotAction(Enum):
     EMERGENCY_STOP = "EMERGENCY_STOP"
 
 
-GEAR_CYCLE = [Gear.NEUTRAL, Gear.FORWARD, Gear.REVERSE]
+class OrchestrationPhase(Enum):
+    SELECTING_ACTION = "SELECTING_ACTION"
+    SELECTING_LANDMARK = "SELECTING_LANDMARK"
+
+
+class OrchestrationAction(Enum):
+    MOVE_TO = "MOVE_TO"
+    CARRY_TO = "CARRY_TO"
+    STACK_TO = "STACK_TO"
+
+
+ORCHESTRATION_ACTIONS = list(OrchestrationAction)
+GEAR_CYCLE = [Gear.NEUTRAL, Gear.FORWARD, Gear.REVERSE, Gear.ORCHESTRATE]
+
+
+@dataclass
+class OrchestrationState:
+    phase: OrchestrationPhase = OrchestrationPhase.SELECTING_ACTION
+    action_index: int = 0
+    landmark_index: int = 0
 
 
 @dataclass
@@ -34,40 +59,178 @@ class RobotState:
     last_action_time: float = 0.0
     override_active: bool = False
     override_robot_id: Optional[str] = None
+    # Toggle state
+    toggled_action: Optional[RobotAction] = None
+    toggled_class: Optional[str] = None
 
 
 class GearStateMachine:
     def __init__(self):
         self.state = RobotState()
         self._gear_index = 0
+        self._orch = OrchestrationState()
+        self._landmarks = list(FACTORY_WAYPOINT_ORDER)
 
     def shift_gear(self) -> Gear:
         """Cycle to next gear. Called on Tongue Tap."""
+        old_gear = self.state.gear
         self._gear_index = (self._gear_index + 1) % len(GEAR_CYCLE)
         self.state.gear = GEAR_CYCLE[self._gear_index]
+        new_gear = self.state.gear
+
+        # Handle transitions to/from orchestrate
+        if old_gear != Gear.ORCHESTRATE and new_gear == Gear.ORCHESTRATE:
+            self._enter_orchestration()
+        elif old_gear == Gear.ORCHESTRATE and new_gear != Gear.ORCHESTRATE:
+            self._exit_orchestration()
+
         return self.state.gear
 
     def set_gear(self, gear: Gear) -> Gear:
         """Directly set gear (voice command or API)."""
+        old_gear = self.state.gear
         self.state.gear = gear
-        self._gear_index = GEAR_CYCLE.index(gear)
+        try:
+            self._gear_index = GEAR_CYCLE.index(gear)
+        except ValueError:
+            self._gear_index = 0
+
+        if old_gear != Gear.ORCHESTRATE and gear == Gear.ORCHESTRATE:
+            self._enter_orchestration()
+        elif old_gear == Gear.ORCHESTRATE and gear != Gear.ORCHESTRATE:
+            self._exit_orchestration()
+
         return gear
 
-    def resolve_brain_command(self, brain_class: str) -> RobotAction:
+    def handle_gesture(self, gesture) -> dict:
+        """Handle a GestureEvent, return result dict.
+
+        Returns: {
+            "action": RobotAction,
+            "toggle_changed": bool,
+            "orchestration_event": str | None,  # "confirm", "cancel", "cycle_action", "cycle_landmark", "dispatch"
+            "orchestration_task": dict | None,   # dispatched task details
+        }
         """
-        Map a brain signal class + current gear state -> robot action.
-        This is the core gear-dependent logic.
+        from .gesture import GestureType
+
+        result = {
+            "action": RobotAction.IDLE,
+            "toggle_changed": False,
+            "orchestration_event": None,
+            "orchestration_task": None,
+        }
+
+        gt = gesture.gesture_type
+        bc = gesture.brain_class
+
+        # SELECT_SEQUENCE is handled by control loop for robot selection (any gear)
+        if gt == GestureType.SELECT_SEQUENCE:
+            result["action"] = self.state.toggled_action or RobotAction.IDLE
+            return result
+
+        # Tongue Tapping quick clench -> shift gear (no toggle change)
+        if bc == "Tongue Tapping" and gt == GestureType.QUICK_CLENCH:
+            self.shift_gear()
+            result["action"] = self.state.toggled_action or RobotAction.IDLE
+            return result
+
+        # Orchestrate gear has its own logic
+        if self.state.gear == Gear.ORCHESTRATE:
+            return self._handle_orchestrate_gesture(gesture, result)
+
+        # Normal gears: toggle-based control
+        if gt == GestureType.QUICK_CLENCH:
+            action = self._resolve_class_to_action(bc)
+            if action == RobotAction.IDLE:
+                result["action"] = self.state.toggled_action or RobotAction.IDLE
+                return result
+
+            # Toggle logic
+            if self.state.toggled_action == action and self.state.toggled_class == bc:
+                # Same action -> toggle OFF
+                self.state.toggled_action = None
+                self.state.toggled_class = None
+                result["action"] = RobotAction.IDLE
+            else:
+                # Different action or new -> auto-cancel previous, toggle ON
+                self.state.toggled_action = action
+                self.state.toggled_class = bc
+                result["action"] = action
+            result["toggle_changed"] = True
+            return result
+
+        # Other gesture types in normal gears: no toggle change
+        result["action"] = self.state.toggled_action or RobotAction.IDLE
+        return result
+
+    def _handle_orchestrate_gesture(self, gesture, result: dict) -> dict:
+        """Handle gestures when in ORCHESTRATE gear."""
+        from .gesture import GestureType
+
+        gt = gesture.gesture_type
+        bc = gesture.brain_class
+
+        # L/R fist quick clench -> cycle options
+        if gt == GestureType.QUICK_CLENCH:
+            if bc == "Right Fist":
+                self._orch_cycle(1)
+                result["orchestration_event"] = "cycle"
+            elif bc in ("Left Fist", "Left First"):
+                self._orch_cycle(-1)
+                result["orchestration_event"] = "cycle"
+
+        # Both Fists medium hold -> confirm selection
+        elif gt == GestureType.HOLD_MEDIUM:
+            if bc in ("Both Fists", "Both Firsts"):
+                task = self._orch_confirm()
+                if task:
+                    result["orchestration_event"] = "dispatch"
+                    result["orchestration_task"] = task
+                else:
+                    result["orchestration_event"] = "confirm"
+
+        # Both Fists double clench -> cancel
+        elif gt == GestureType.DOUBLE_CLENCH:
+            if bc in ("Both Fists", "Both Firsts"):
+                self._orch_cancel()
+                result["orchestration_event"] = "cancel"
+
+        result["action"] = self.state.toggled_action or RobotAction.IDLE
+        return result
+
+    def _resolve_class_to_action(self, brain_class: str) -> RobotAction:
+        """Map a brain class + current gear -> robot action (without side effects like gear shift)."""
+        if brain_class == "Right Fist":
+            return RobotAction.ROTATE_RIGHT
+        elif brain_class in ("Left Fist", "Left First"):
+            return RobotAction.ROTATE_LEFT
+        elif brain_class in ("Both Fists", "Both Firsts"):
+            if self.state.gear == Gear.FORWARD:
+                return RobotAction.MOVE_FORWARD
+            elif self.state.gear == Gear.REVERSE:
+                return RobotAction.MOVE_BACKWARD
+            else:  # NEUTRAL
+                return self._peek_grab()
+        elif brain_class == "Relax":
+            return RobotAction.IDLE
+        return RobotAction.IDLE
+
+    def _peek_grab(self) -> RobotAction:
+        """Return GRAB or RELEASE based on current holding state (without toggling)."""
+        return RobotAction.RELEASE if self.state.holding_item else RobotAction.GRAB
+
+    def resolve_brain_command(self, brain_class: str) -> RobotAction:
+        """Legacy: map a brain signal class + current gear state -> robot action.
+        Used for manual commands (backward compat).
         """
         if brain_class == "Right Fist":
             return RobotAction.ROTATE_RIGHT
-
         elif brain_class == "Left Fist" or brain_class == "Left First":
             return RobotAction.ROTATE_LEFT
-
         elif brain_class == "Tongue Tapping":
             self.shift_gear()
-            return RobotAction.IDLE  # gear shift itself isn't a movement
-
+            return RobotAction.IDLE
         elif brain_class == "Both Fists" or brain_class == "Both Firsts":
             if self.state.gear == Gear.FORWARD:
                 return RobotAction.MOVE_FORWARD
@@ -75,10 +238,8 @@ class GearStateMachine:
                 return RobotAction.MOVE_BACKWARD
             else:  # NEUTRAL
                 return self._toggle_grab()
-
         elif brain_class == "Relax":
             return RobotAction.IDLE
-
         return RobotAction.IDLE
 
     def _toggle_grab(self) -> RobotAction:
@@ -90,10 +251,68 @@ class GearStateMachine:
             self.state.holding_item = True
             return RobotAction.GRAB
 
+    # --- Orchestration sub-methods ---
+
+    def _enter_orchestration(self):
+        """Reset orchestration state when entering ORCHESTRATE gear."""
+        self._orch = OrchestrationState()
+
+    def _exit_orchestration(self):
+        """Clean up when leaving ORCHESTRATE gear."""
+        self._orch = OrchestrationState()
+
+    def _orch_cycle(self, direction: int):
+        """Cycle current selection in orchestration by direction (-1 or +1)."""
+        if self._orch.phase == OrchestrationPhase.SELECTING_ACTION:
+            self._orch.action_index = (self._orch.action_index + direction) % len(ORCHESTRATION_ACTIONS)
+        else:
+            self._orch.landmark_index = (self._orch.landmark_index + direction) % len(self._landmarks)
+
+    def _orch_confirm(self) -> Optional[dict]:
+        """Confirm current orchestration selection. Returns task dict if dispatching."""
+        if self._orch.phase == OrchestrationPhase.SELECTING_ACTION:
+            self._orch.phase = OrchestrationPhase.SELECTING_LANDMARK
+            return None
+        else:
+            # Dispatch task
+            action = ORCHESTRATION_ACTIONS[self._orch.action_index]
+            landmark = self._landmarks[self._orch.landmark_index]
+            task = {
+                "action": action.value,
+                "landmark": landmark,
+                "action_index": self._orch.action_index,
+                "landmark_index": self._orch.landmark_index,
+            }
+            # Reset to action selection
+            self._orch = OrchestrationState()
+            return task
+
+    def _orch_cancel(self):
+        """Cancel current orchestration selection — go back or reset."""
+        if self._orch.phase == OrchestrationPhase.SELECTING_LANDMARK:
+            self._orch.phase = OrchestrationPhase.SELECTING_ACTION
+        else:
+            self._orch = OrchestrationState()
+
+    def get_orchestration_state(self) -> Optional[dict]:
+        """Return orchestration state for frontend. None if not in ORCHESTRATE gear."""
+        if self.state.gear != Gear.ORCHESTRATE:
+            return None
+        return {
+            "phase": self._orch.phase.value,
+            "action_name": ORCHESTRATION_ACTIONS[self._orch.action_index].value,
+            "action_index": self._orch.action_index,
+            "landmark_name": self._landmarks[self._orch.landmark_index],
+            "landmark_index": self._orch.landmark_index,
+            "actions": [a.value for a in ORCHESTRATION_ACTIONS],
+            "landmarks": self._landmarks,
+        }
+
     def reset(self):
         """Reset state machine to defaults."""
         self.state = RobotState()
         self._gear_index = 0
+        self._orch = OrchestrationState()
 
     def get_state_snapshot(self) -> dict:
         """Return current state for frontend broadcast."""
@@ -103,4 +322,6 @@ class GearStateMachine:
             "current_action": self.state.current_action.value,
             "override_active": self.state.override_active,
             "override_robot_id": self.state.override_robot_id,
+            "toggled_action": self.state.toggled_action.value if self.state.toggled_action else None,
+            "toggled_class": self.state.toggled_class,
         }

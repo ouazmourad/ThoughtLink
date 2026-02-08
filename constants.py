@@ -144,3 +144,11 @@ STATUS_COLORS = {
     "STOP":    [1.0, 0.9, 0.0, 0.8],
     "GRAB":    [0.7, 0.0, 1.0, 0.8],
 }
+
+# === Gesture Recognition Timing ===
+QUICK_CLENCH_MAX_S = 1.5
+MEDIUM_HOLD_THRESHOLD_S = 2.0
+LONG_HOLD_THRESHOLD_S = 4.0
+DOUBLE_CLENCH_WINDOW_S = 1.0
+SELECT_WINDOW_S = 0.5
+RECLENCH_WINDOW_S = 0.8

@@ -7,11 +7,13 @@ from pathlib import Path
 
 import numpy as np
 
-from .state_machine import GearStateMachine, RobotAction
+from .state_machine import GearStateMachine, RobotAction, Gear
 from .command_fusion import CommandFusion
 from .sim_bridge import SimBridge
 from .eeg_source import EEGReplaySource, TestEEGSource
 from .autopilot import Autopilot
+from .robot_manager import RobotManager
+from .gesture import GestureType
 from voice.command_parser import CommandParser
 from .config import (
     EEG_DATA_DIR,
@@ -50,9 +52,16 @@ _VOICE_ACTION_MAP = {
 class ControlLoop:
     def __init__(self, broadcast_fn):
         self.broadcast = broadcast_fn
-        self.state_machine = GearStateMachine()
-        self.fusion = CommandFusion(self.state_machine)
+
+        # Multi-robot manager (contains per-robot state machines)
+        self.robot_manager = RobotManager()
+
+        # Fusion uses the selected robot's state machine
+        self.fusion = CommandFusion(self.robot_manager.selected_sm)
+
+        # Sim bridge (multi-robot aware)
         self.sim = SimBridge()
+
         self._voice_parser = CommandParser()
 
         # Initialize EEG source
@@ -78,8 +87,8 @@ class ControlLoop:
         self._voice_queue: list[dict] = []
         self._voice_lock = asyncio.Lock()
 
-        # Autopilot (voice-commanded navigation)
-        self._autopilot: Autopilot | None = None
+        # Per-robot autopilots
+        self._autopilots: dict[str, Autopilot] = {}
 
         # Metrics
         self.tick_count = 0
@@ -97,6 +106,11 @@ class ControlLoop:
                     print(f"[ControlLoop] Loaded BrainDecoder from {model_path}")
                 except Exception as e:
                     print(f"[ControlLoop] Failed to load BrainDecoder: {e}")
+
+    @property
+    def state_machine(self):
+        """Backward-compat: selected robot's state machine."""
+        return self.robot_manager.selected_sm
 
     async def start(self):
         """Start the simulation and begin the control loop."""
@@ -123,12 +137,15 @@ class ControlLoop:
                 })
 
     async def push_manual_command(self, action_str: str):
-        """Inject a manual command — executes directly, bypasses voice/fusion pipeline."""
+        """Inject a manual command — executes directly on selected robot."""
+        selected = self.robot_manager.selected_robot
+        sm = self.robot_manager.selected_sm
+
         if action_str == "SHIFT_GEAR":
-            self.state_machine.shift_gear()
+            sm.shift_gear()
             return
         if action_str == "BOTH_FISTS":
-            action = self.state_machine.resolve_brain_command("Both Fists")
+            action = sm.resolve_brain_command("Both Fists")
         else:
             action_map = {
                 "MOVE_FORWARD": RobotAction.MOVE_FORWARD,
@@ -140,8 +157,8 @@ class ControlLoop:
                 "RELEASE": RobotAction.RELEASE,
             }
             action = action_map.get(action_str, RobotAction.IDLE)
-        self.sim.execute(action)
-        self.state_machine.state.current_action = action
+        self.sim.execute(action, selected.id)
+        sm.state.current_action = action
 
     def set_test_mode(self, enabled: bool):
         """Enable/disable test EEG mode. Requires ONNX model loaded."""
@@ -168,40 +185,47 @@ class ControlLoop:
         else:
             print("[ControlLoop] Brain sim OFF")
 
-    def start_nav(self, target_name: str) -> dict:
+    def start_nav(self, target_name: str, robot_id: str | None = None) -> dict:
         """Start autopilot navigation to a named waypoint."""
+        if robot_id is None:
+            robot_id = self.robot_manager.selected_robot.id
+
         result = Autopilot.resolve_target(target_name)
         if result is None:
             print(f"[ControlLoop] Unknown nav target: {target_name}")
             return {"ok": False, "error": f"Unknown landmark: {target_name}"}
         canonical_name, (tx, ty) = result
-        self._autopilot = Autopilot(canonical_name, (tx, ty))
+        self._autopilots[robot_id] = Autopilot(canonical_name, (tx, ty))
+
         # Set gear to forward for walking
-        from .state_machine import Gear
-        self.state_machine.set_gear(Gear.FORWARD)
-        print(f"[ControlLoop] Navigating to {canonical_name} ({tx}, {ty})")
+        sm = self.robot_manager.state_machines.get(robot_id, self.robot_manager.selected_sm)
+        sm.set_gear(Gear.FORWARD)
+        print(f"[ControlLoop] {robot_id} navigating to {canonical_name} ({tx}, {ty})")
         return {"ok": True, "target": canonical_name, "x": tx, "y": ty}
 
-    def cancel_nav(self):
+    def cancel_nav(self, robot_id: str | None = None):
         """Cancel any active autopilot navigation."""
-        if self._autopilot and self._autopilot.active:
-            self._autopilot.cancel()
-            print("[ControlLoop] Navigation cancelled")
-        self._autopilot = None
+        if robot_id is None:
+            robot_id = self.robot_manager.selected_robot.id
+        ap = self._autopilots.get(robot_id)
+        if ap and ap.active:
+            ap.cancel()
+            print(f"[ControlLoop] Navigation cancelled for {robot_id}")
+        self._autopilots.pop(robot_id, None)
 
     def full_reset(self):
         """Reset all subsystems to initial state."""
-        self.state_machine.reset()
+        self.robot_manager.reset()
+        self.fusion = CommandFusion(self.robot_manager.selected_sm)
         self.sim.reset()
         self._voice_queue.clear()
-        self._autopilot = None
+        self._autopilots.clear()
         if self.eeg_source:
             self.eeg_source.reset()
         if self._test_eeg_source:
             self._test_eeg_source.reset()
         if self._brain_decoder:
             self._brain_decoder.reset()
-        self.fusion.voice_override_until = 0.0
         self._sim_brain_class = None
         self.latencies.clear()
         self.tick_count = 0
@@ -210,6 +234,11 @@ class ControlLoop:
     async def tick(self):
         """Single tick of the control loop."""
         tick_start = time.time()
+
+        # Ensure fusion points to the currently selected robot's state machine
+        selected = self.robot_manager.selected_robot
+        selected_sm = self.robot_manager.selected_sm
+        self.fusion.sm = selected_sm
 
         # 1. Get EEG prediction (or use brain simulator)
         eeg_window = None
@@ -275,7 +304,8 @@ class ControlLoop:
                 voice_command = None
             elif action_str in ("CANCEL_NAV", "STOP", "EMERGENCY_STOP", "STOP_ALL"):
                 # Cancel active navigation on stop commands
-                if self._autopilot and self._autopilot.active:
+                ap = self._autopilots.get(selected.id)
+                if ap and ap.active:
                     self.cancel_nav()
                     await self.broadcast({
                         "type": "command_log",
@@ -286,20 +316,19 @@ class ControlLoop:
                     })
 
         # 3. Determine action: autopilot takes priority when active
-        if self._autopilot and self._autopilot.active:
-            # Read current robot position from sim
-            robot_state_now = self.sim.get_state()
+        selected_autopilot = self._autopilots.get(selected.id)
+        if selected_autopilot and selected_autopilot.active:
+            robot_state_now = self.sim.get_state(selected.id)
             pos = robot_state_now.get("position", [0, 0, 0])
             yaw = robot_state_now.get("orientation", 0)
-            action = self._autopilot.update((pos[0], pos[1]), yaw)
+            action = selected_autopilot.update((pos[0], pos[1]), yaw)
             action_source = "autopilot"
 
-            # Check if arrived
-            if self._autopilot.arrived:
+            if selected_autopilot.arrived:
                 await self.broadcast({
                     "type": "command_log",
                     "source": "system",
-                    "action": f"ARRIVED at {self._autopilot.target_name}",
+                    "action": f"ARRIVED at {selected_autopilot.target_name}",
                     "timestamp": time.time(),
                 })
         else:
@@ -308,8 +337,37 @@ class ControlLoop:
             action = fused["action"]
             action_source = fused["source"]
 
-        # 4. Execute in simulation
-        robot_state = self.sim.execute(action)
+            # Handle SELECT_SEQUENCE for robot selection
+            if (action_source == "brain_gesture" and
+                    fused.get("gesture_type") == "SELECT_SEQUENCE"):
+                direction = fused.get("select_direction")
+                if direction:
+                    self.robot_manager.select_by_direction(direction)
+                    # Re-point fusion to new selected SM
+                    self.fusion.sm = self.robot_manager.selected_sm
+
+            # Handle orchestration task dispatch
+            if fused.get("orchestration_task"):
+                task = fused["orchestration_task"]
+                nav_result = self.start_nav(task["landmark"])
+                if nav_result.get("ok"):
+                    selected.task = task
+                    await self.broadcast({
+                        "type": "command_log",
+                        "source": "system",
+                        "action": f"ORCH: {task['action']} → {task['landmark']}",
+                        "timestamp": time.time(),
+                    })
+
+        # 4. Execute on selected robot
+        robot_state = self.sim.execute(action, selected.id)
+
+        # Sync robot manager state from sim
+        self.robot_manager.update_robot_state(
+            selected.id,
+            robot_state.get("position", [0, 0, 0]),
+            robot_state.get("orientation", 0),
+        )
 
         # 5. Calculate latency
         latency_ms = (time.time() - tick_start) * 1000
@@ -320,27 +378,31 @@ class ControlLoop:
         # 6. Broadcast state to frontend
         await self.broadcast({
             "type": "state_update",
-            "gear": self.state_machine.state.gear.value,
+            "gear": selected_sm.state.gear.value,
             "action": action.value,
             "action_source": action_source,
             "brain_class": brain_result.get("label") if brain_result else None,
             "brain_confidence": brain_result.get("confidence", 0) if brain_result else 0,
             "brain_gated": brain_result.get("gated", True) if brain_result else True,
-            "holding_item": self.state_machine.state.holding_item,
+            "holding_item": selected_sm.state.holding_item,
             "robot_state": robot_state,
             "latency_ms": round(latency_ms, 1),
             "timestamp": time.time(),
+            # New multi-robot / toggle / orchestration fields
+            "toggled_action": selected_sm.state.toggled_action.value if selected_sm.state.toggled_action else None,
+            "selected_robot": selected.id,
+            "robots": self.robot_manager.get_all_states(),
+            "orchestration": selected_sm.get_orchestration_state(),
         })
 
         # 6b. Broadcast autopilot navigation status
-        if self._autopilot:
+        if selected_autopilot:
             await self.broadcast({
                 "type": "nav_update",
-                **self._autopilot.get_status(),
+                **selected_autopilot.get_status(),
             })
-            # Clean up finished autopilot
-            if not self._autopilot.active:
-                self._autopilot = None
+            if not selected_autopilot.active:
+                self._autopilots.pop(selected.id, None)
 
         # 7. Broadcast EEG visualization data (every 10th tick = 1Hz)
         if self.tick_count % 10 == 0 and eeg_window is not None:
@@ -354,15 +416,15 @@ class ControlLoop:
             except Exception:
                 pass
 
-        # 8. Log to command log (only for normal fusion, not autopilot)
-        if action_source in ("brain", "voice"):
+        # 8. Log to command log (only for fusion events, not autopilot)
+        if action_source in ("brain_gesture", "brain_toggle", "voice"):
             log_entry = {
                 "type": "command_log",
-                "source": action_source,
+                "source": "brain" if action_source.startswith("brain") else action_source,
                 "action": action.value,
                 "timestamp": time.time(),
             }
-            if action_source == "brain" and brain_result:
+            if action_source.startswith("brain") and brain_result:
                 log_entry["brain_class"] = brain_result.get("class")
                 log_entry["confidence"] = brain_result.get("confidence", 0)
             if action_source == "voice" and voice_command:

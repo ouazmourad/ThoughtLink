@@ -20,6 +20,10 @@ function RobotView(canvasId) {
     this.floorSize = [8, 8];
     this.mapLoaded = false;
     this.legendCategories = {};
+    // Multi-robot state
+    this.allRobots = []; // [{id, position, orientation, color, selected, ...}]
+    this.selectedRobotId = "robot_0";
+    this.onRobotClick = null; // callback(robotId) set by app.js
     this._resize();
     var self = this;
     window.addEventListener("resize", function() { self._resize(); });
@@ -28,6 +32,10 @@ function RobotView(canvasId) {
         var delta = e.deltaY > 0 ? 0.5 : -0.5;
         self.viewRange = Math.max(self.minViewRange, Math.min(self.maxViewRange, self.viewRange + delta));
     }, { passive: false });
+    // Click-to-select robot
+    this.canvas.addEventListener("click", function(e) {
+        self._handleClick(e);
+    });
     this._parseSceneXML(EMBEDDED_SCENE_XML);
     this.mapLoaded = true;
     console.log("[RobotView] Map loaded from embedded XML:", this.mapObjects.length, "objects");
@@ -134,7 +142,13 @@ RobotView.prototype.reset = function() {
     this.robot.trail = [];
 };
 
-RobotView.prototype.updateState = function(robotState, action) {
+RobotView.prototype.updateState = function(robotState, action, allRobots, selectedRobotId) {
+    // Store multi-robot data if provided
+    if (allRobots && allRobots.length > 0) {
+        this.allRobots = allRobots;
+        this.selectedRobotId = selectedRobotId || "robot_0";
+    }
+
     // Use real sim position if available (non-zero position means sim is running)
     if (robotState && robotState.position &&
         (robotState.position[0] !== 0 || robotState.position[1] !== 0 || robotState.orientation !== 0)) {
@@ -189,7 +203,18 @@ RobotView.prototype._drawFrame = function() {
     }
     // Draw navigation target if active
     if (this.navTarget) this._drawNavTarget(ctx, scale, toC);
-    this._drawRobot(ctx,scale,toC); this._drawHUD(ctx,w,h,scale);
+    // Draw all robots (non-selected first, then selected on top)
+    if (this.allRobots.length > 0) {
+        for (var ri = 0; ri < this.allRobots.length; ri++) {
+            if (!this.allRobots[ri].selected) this._drawMultiRobot(ctx, scale, toC, this.allRobots[ri]);
+        }
+        for (var ri2 = 0; ri2 < this.allRobots.length; ri2++) {
+            if (this.allRobots[ri2].selected) this._drawMultiRobot(ctx, scale, toC, this.allRobots[ri2]);
+        }
+    } else {
+        this._drawRobot(ctx,scale,toC);
+    }
+    this._drawHUD(ctx,w,h,scale);
     if (this.mapLoaded) this._drawLegend(ctx,w,h);
 };
 
@@ -310,6 +335,82 @@ RobotView.prototype._drawNavTarget = function(ctx, scale, toC) {
     ctx.fillText(t.name || "TARGET", tp.x, tp.y - R - 6);
 
     ctx.restore();
+};
+
+RobotView.prototype._drawMultiRobot = function(ctx, scale, toC, robotData) {
+    var pos = robotData.position || [0,0,0];
+    var rp = toC(pos[0], pos[1]);
+    var R = Math.max(8, scale * 0.25);
+    var color = robotData.color || "#3b82f6";
+    var isSelected = robotData.selected;
+    var angle = robotData.orientation || 0;
+
+    ctx.save();
+
+    // Pulsing selection ring for selected robot
+    if (isSelected) {
+        var time = Date.now() / 1000;
+        var pulse = 0.6 + 0.4 * Math.sin(time * 4);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = pulse;
+        ctx.beginPath();
+        ctx.arc(rp.x, rp.y, R * 1.8, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 15;
+    }
+
+    // Glow
+    var c = this._hex2rgb(color);
+    ctx.fillStyle = "rgba(" + c.r + "," + c.g + "," + c.b + ",0.3)";
+    ctx.beginPath(); ctx.arc(rp.x, rp.y, R * 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Body
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(rp.x, rp.y, R, 0, Math.PI * 2); ctx.fill();
+
+    // Direction arrow
+    var ax = rp.x + Math.cos(angle) * R * 1.6, ay = rp.y - Math.sin(angle) * R * 1.6;
+    var px = -Math.sin(angle), py = -Math.cos(angle);
+    var bx = rp.x + Math.cos(angle) * R * 0.7, by = rp.y - Math.sin(angle) * R * 0.7;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx + px * R * 0.5, by + py * R * 0.5); ctx.lineTo(bx - px * R * 0.5, by - py * R * 0.5); ctx.closePath(); ctx.fill();
+
+    // Center dot
+    ctx.fillStyle = "#1a1e24";
+    ctx.beginPath(); ctx.arc(rp.x, rp.y, R * 0.3, 0, Math.PI * 2); ctx.fill();
+
+    // ID label below
+    ctx.fillStyle = color;
+    ctx.font = Math.max(8, scale * 0.18) + "px JetBrains Mono, monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(robotData.id.replace("robot_", "R"), rp.x, rp.y + R + Math.max(10, scale * 0.3));
+
+    ctx.restore();
+};
+
+RobotView.prototype._handleClick = function(e) {
+    if (!this.allRobots || this.allRobots.length === 0 || !this.onRobotClick) return;
+    var rect = this.canvas.getBoundingClientRect();
+    var cx = this.canvas.width / 2, cy = this.canvas.height / 2;
+    var scale = Math.min(this.canvas.width, this.canvas.height) / (this.viewRange * 2);
+    var clickX = e.clientX - rect.left;
+    var clickY = e.clientY - rect.top;
+    var hitRadius = Math.max(15, scale * 0.4);
+
+    for (var i = 0; i < this.allRobots.length; i++) {
+        var r = this.allRobots[i];
+        var pos = r.position || [0, 0, 0];
+        var sp = this._toC(pos[0], pos[1], scale, cx, cy);
+        var dx = clickX - sp.x, dy = clickY - sp.y;
+        if (dx * dx + dy * dy < hitRadius * hitRadius) {
+            this.onRobotClick(r.id);
+            return;
+        }
+    }
 };
 
 RobotView.prototype._lighten = function(hex,a) { var c=this._hex2rgb(hex); return "rgb("+Math.min(255,c.r+a*255)+","+Math.min(255,c.g+a*255)+","+Math.min(255,c.b+a*255)+")"; };

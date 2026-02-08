@@ -43,18 +43,23 @@ async def websocket_endpoint(websocket: WebSocket):
     print(f"[Server] Client connected ({len(connected_clients)} total)")
 
     # Send initial state
+    sm = _control_loop.state_machine
     await websocket.send_text(json.dumps({
         "type": "state_update",
-        "gear": _control_loop.state_machine.state.gear.value,
+        "gear": sm.state.gear.value,
         "action": "IDLE",
         "action_source": "idle",
         "brain_class": None,
         "brain_confidence": 0,
         "brain_gated": True,
-        "holding_item": _control_loop.state_machine.state.holding_item,
+        "holding_item": sm.state.holding_item,
         "robot_state": _control_loop.sim.get_state(),
         "latency_ms": 0,
         "timestamp": time.time(),
+        "toggled_action": None,
+        "selected_robot": _control_loop.robot_manager.selected_robot.id,
+        "robots": _control_loop.robot_manager.get_all_states(),
+        "orchestration": sm.get_orchestration_state(),
     }))
 
     try:
@@ -114,6 +119,10 @@ async def _handle_client_message(message: dict, websocket: WebSocket):
             "robot_state": _control_loop.sim.get_state(),
             "latency_ms": 0,
             "timestamp": time.time(),
+            "toggled_action": None,
+            "selected_robot": _control_loop.robot_manager.selected_robot.id,
+            "robots": _control_loop.robot_manager.get_all_states(),
+            "orchestration": None,
         })
 
     elif msg_type == "toggle_test_mode":
@@ -160,16 +169,50 @@ async def _handle_client_message(message: dict, websocket: WebSocket):
             "robot_state": _control_loop.sim.get_state(),
             "latency_ms": 0,
             "timestamp": time.time(),
+            "toggled_action": None,
+            "selected_robot": _control_loop.robot_manager.selected_robot.id,
+            "robots": _control_loop.robot_manager.get_all_states(),
+            "orchestration": None,
         })
 
-    elif msg_type == "simulate_brain":
-        class_index = message.get("class_index")  # int 0-4 or null to disable
+    elif msg_type == "sim_brain_start":
+        # Press-and-hold: mousedown starts simulation
+        class_index = message.get("class_index")
         _control_loop.set_sim_brain(class_index)
         await broadcast({
             "type": "sim_brain_update",
             "class_index": _control_loop._sim_brain_class,
             "timestamp": time.time(),
         })
+
+    elif msg_type == "sim_brain_stop":
+        # Press-and-hold: mouseup stops simulation
+        _control_loop.set_sim_brain(None)
+        await broadcast({
+            "type": "sim_brain_update",
+            "class_index": None,
+            "timestamp": time.time(),
+        })
+
+    elif msg_type == "simulate_brain":
+        # Legacy toggle-style (backward compat)
+        class_index = message.get("class_index")
+        _control_loop.set_sim_brain(class_index)
+        await broadcast({
+            "type": "sim_brain_update",
+            "class_index": _control_loop._sim_brain_class,
+            "timestamp": time.time(),
+        })
+
+    elif msg_type == "select_robot":
+        robot_id = message.get("robot_id", "")
+        if robot_id:
+            _control_loop.robot_manager.select_by_id(robot_id)
+            await broadcast({
+                "type": "robot_selected",
+                "robot_id": _control_loop.robot_manager.selected_robot.id,
+                "timestamp": time.time(),
+            })
 
     elif msg_type == "cancel_nav":
         _control_loop.cancel_nav()
