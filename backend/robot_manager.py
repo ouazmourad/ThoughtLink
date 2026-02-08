@@ -1,18 +1,28 @@
 """Robot Manager — multi-robot selection and per-robot state machines."""
 
+import json
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from .state_machine import GearStateMachine, RobotAction
 
 
-# Default starting positions for 3 robots
-_DEFAULT_ROBOTS = [
-    {"id": "robot_0", "x": 0.0, "y": 0.0, "orientation": 0.0, "color": "#3b82f6"},   # blue (primary)
-    {"id": "robot_1", "x": -3.0, "y": 3.0, "orientation": 1.57, "color": "#22c55e"},  # green
-    {"id": "robot_2", "x": 3.0, "y": 3.0, "orientation": -1.57, "color": "#f97316"},  # orange
-]
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "robot_config.json"
+
+def _load_robot_config() -> list[dict]:
+    """Load robot configurations from robot_config.json, fall back to single robot."""
+    try:
+        with open(_CONFIG_PATH) as f:
+            cfg = json.load(f)
+        robots = cfg.get("robots", [])
+        if robots:
+            return robots
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    # Default: single robot at origin
+    return [{"id": "robot_0", "x": 0.0, "y": 0.0, "orientation": 0.0, "color": "#3b82f6"}]
 
 
 @dataclass
@@ -36,20 +46,21 @@ class RobotManager:
         self._init_robots()
 
     def _init_robots(self):
-        """Initialize robots from defaults."""
+        """Initialize robots from config file."""
         self.robots = []
         self.state_machines = {}
-        for cfg in _DEFAULT_ROBOTS:
+        robot_configs = _load_robot_config()
+        for cfg in robot_configs:
             robot = Robot(
                 id=cfg["id"],
-                position=[cfg["x"], cfg["y"], 0.0],
-                orientation=cfg["orientation"],
-                color=cfg["color"],
+                position=[cfg.get("x", 0.0), cfg.get("y", 0.0), 0.0],
+                orientation=cfg.get("orientation", 0.0),
+                color=cfg.get("color", "#3b82f6"),
             )
             self.robots.append(robot)
             self.state_machines[cfg["id"]] = GearStateMachine()
         self.selected_index = 0
-        self.active_robot_ids = {_DEFAULT_ROBOTS[0]["id"]}
+        self.active_robot_ids = {robot_configs[0]["id"]}
 
     def set_active_robots(self, robot_ids: list[str]):
         """Set which robots are targeted by orchestration tasks."""

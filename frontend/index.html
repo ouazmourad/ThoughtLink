@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ThoughtLink Control Dashboard</title>
+    <title>Kinexus Control Dashboard</title>
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <body>
     <!-- Header -->
     <div class="header">
-        <div class="header-title"><span>Thought</span>Link Control Dashboard</div>
+        <div class="header-title"><span>Kine</span>xus Control Dashboard</div>
         <div class="connection-status">
             <span id="conn-text">Disconnected</span>
             <div class="status-dot" id="conn-dot"></div>
@@ -142,6 +142,7 @@
                     <button class="ctrl-btn active-toggle" id="btn-brain" onclick="toggleBrain()">BRAIN<span class="key-hint">On</span></button>
                     <button class="ctrl-btn active-toggle" id="btn-voice" onclick="toggleVoice()">VOICE<span class="key-hint">On</span></button>
                     <button class="ctrl-btn" id="btn-test-mode" onclick="toggleTestMode()">TEST EEG<span class="key-hint">Off</span></button>
+                    <button class="ctrl-btn active-toggle" id="btn-eeg-stream" onclick="toggleEEGStream()">EEG STREAM<span class="key-hint">On</span></button>
                     <button class="ctrl-btn accent" onclick="sendFullReset()">FULL RESET</button>
                 </div>
                 <div class="card-header" style="margin-top: 10px;">Brain Simulator (hold to activate)</div>

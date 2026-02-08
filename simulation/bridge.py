@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generator
 
+import mujoco
 import numpy as np
 
 from bri import Action, Controller
@@ -28,6 +29,8 @@ from constants import (
     WINDOW_STRIDE_SAMPLES,
     STIMULUS_START_SAMPLE,
     LABEL_NAMES,
+    GRAB_REACH_DIST,
+    FACTORY_GRABBABLE_BOXES,
 )
 
 
@@ -72,6 +75,8 @@ class SimulationBridge:
         self._robot = robot
         self._action_log: list[ActionLogEntry] = []
         self._running = False
+        self._held_geom_id: int | None = None
+        self._held_geom_original_pos: np.ndarray | None = None
 
         # Resolve bundle directory
         if bundle_dir is None:
@@ -162,7 +167,6 @@ class SimulationBridge:
 
     def get_robot_state(self):
         """Return (robot_xy as ndarray, yaw_angle as float) from pelvis body."""
-        import mujoco
         model, data, _ = self.get_mujoco_access()
         pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
         pos = data.xpos[pelvis_id]
@@ -179,10 +183,34 @@ class SimulationBridge:
         Send a discrete action to the robot.
 
         Args:
-            action_name: One of "FORWARD", "LEFT", "RIGHT", "STOP"
+            action_name: One of "FORWARD", "BACKWARD", "LEFT", "RIGHT",
+                         "STOP", "GRAB", "RELEASE", "BACKFLIP"
         """
         if not self._running:
             return
+
+        upper = action_name.upper()
+
+        if upper == "BACKWARD":
+            self.send_action_backward()
+            return
+        if upper == "GRAB":
+            self.grab_nearest()
+            return
+        if upper == "HOLD":
+            # Hold is handled externally (grab_nearest once, then sustain)
+            self.update_held_position()
+            return
+        if upper == "RELEASE":
+            self.release()
+            return
+        if upper == "BACKFLIP":
+            self.send_backflip()
+            return
+
+        # Keep held object attached even while walking/turning
+        self.update_held_position()
+
         action = Action.from_str(action_name)
         self._controller.set_action(action)
 
@@ -202,6 +230,223 @@ class SimulationBridge:
         while time.perf_counter() < end_time and self._running:
             self._controller.set_action(action)
             time.sleep(0.05)  # refresh at 20Hz, well within hold_s
+
+    # ------------------------------------------------------------------
+    # Backward action
+    # ------------------------------------------------------------------
+    def send_action_backward(self) -> None:
+        """
+        Walk the robot backward.
+
+        Tries ``Action.from_str("BACKWARD")`` first.  If the *bri* library
+        does not expose a BACKWARD action, we fall back to directly setting a
+        negative forward velocity on the pelvis body in MuJoCo.
+        """
+        if not self._running:
+            return
+        try:
+            action = Action.from_str("BACKWARD")
+            self._controller.set_action(action)
+        except (ValueError, KeyError, AttributeError):
+            # Fallback: apply negative forward velocity via MuJoCo data
+            model, data, _ = self.get_mujoco_access()
+            pelvis_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_BODY, "pelvis"
+            )
+            # Get the robot's current yaw to compute the backward direction
+            _, yaw = self.get_robot_state()
+            backward_speed = -0.6  # negative of default forward_speed
+            # Set translational velocity in the body's forward direction
+            # qvel indices 0,1 are root body linear x,y
+            data.qvel[0] = backward_speed * np.cos(yaw)
+            data.qvel[1] = backward_speed * np.sin(yaw)
+            print("[SimBridge] BACKWARD (fallback velocity)")
+
+    # ------------------------------------------------------------------
+    # Grab / Release mechanics  (position-lock for static worldbody geoms)
+    # ------------------------------------------------------------------
+
+    _HAND_BODY_NAME = "right_wrist_yaw_link"
+    _HAND_OFFSET = np.array([0.15, 0.0, -0.05])  # local offset from hand body
+
+    def grab_nearest(self) -> bool:
+        """
+        Find the nearest grabbable static geom within ``GRAB_REACH_DIST``
+        and start position-locking it to the robot's hand each tick.
+
+        Works with static worldbody geoms by directly writing
+        ``model.geom_pos`` every tick (see ``update_held_position``).
+
+        Returns True if an object was grabbed, False otherwise.
+        """
+        if not self._running:
+            return False
+        if self._held_geom_id is not None:
+            return False  # already holding
+
+        model, data, _ = self.get_mujoco_access()
+        robot_xy, _ = self.get_robot_state()
+
+        best_dist = GRAB_REACH_DIST
+        best_geom_id: int | None = None
+        best_geom_name: str | None = None
+
+        for geom_name in FACTORY_GRABBABLE_BOXES:
+            gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+            if gid < 0:
+                continue
+            geom_pos = data.geom_xpos[gid]
+            dist = np.linalg.norm(robot_xy - geom_pos[:2])
+            if dist < best_dist:
+                best_dist = dist
+                best_geom_id = gid
+                best_geom_name = geom_name
+
+        if best_geom_id is None:
+            print("[SimBridge] No grabbable object within reach.")
+            return False
+
+        # Store original position so we can drop nearby on release
+        self._held_geom_id = best_geom_id
+        self._held_geom_original_pos = model.geom_pos[best_geom_id].copy()
+
+        # Immediately snap to hand
+        self.update_held_position()
+        print(f"[SimBridge] Grabbed '{best_geom_name}' (dist={best_dist:.2f}m) — position-lock active")
+        return True
+
+    def update_held_position(self) -> None:
+        """
+        Move the held geom to the robot's hand position.
+
+        Must be called every simulation tick while an object is held so
+        the box visually follows the robot.  For static worldbody geoms
+        ``model.geom_pos`` is their world position, so writing it directly
+        makes them move.
+        """
+        if self._held_geom_id is None:
+            return
+        if not self._running:
+            return
+
+        model, data, _ = self.get_mujoco_access()
+
+        # Get hand body world position + rotation
+        hand_body_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, self._HAND_BODY_NAME
+        )
+        if hand_body_id < 0:
+            hand_body_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_BODY, "pelvis"
+            )
+
+        hand_world_pos = data.xpos[hand_body_id].copy()
+        hand_rot = data.xmat[hand_body_id].reshape(3, 3)
+
+        # Compute target = hand_world_pos + rotated local offset
+        target = hand_world_pos + hand_rot @ self._HAND_OFFSET
+        model.geom_pos[self._held_geom_id] = target
+
+    def release(self) -> bool:
+        """
+        Drop the held geom near the robot's feet (ground level).
+
+        Returns True if an object was released, False if nothing was held.
+        """
+        if self._held_geom_id is None:
+            return False
+
+        model, data, _ = self.get_mujoco_access()
+        robot_xy, yaw = self.get_robot_state()
+
+        # Place 0.3m in front of robot at ground level
+        drop_x = robot_xy[0] + 0.3 * np.cos(yaw)
+        drop_y = robot_xy[1] + 0.3 * np.sin(yaw)
+        # Restore original z (ground height) from the saved position
+        drop_z = self._held_geom_original_pos[2]
+
+        model.geom_pos[self._held_geom_id] = [drop_x, drop_y, drop_z]
+        geom_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, self._held_geom_id)
+        print(f"[SimBridge] Released '{geom_name}' at ({drop_x:.2f}, {drop_y:.2f})")
+
+        self._held_geom_id = None
+        self._held_geom_original_pos = None
+        return True
+
+    # ------------------------------------------------------------------
+    # Fall recovery
+    # ------------------------------------------------------------------
+    _FALL_PELVIS_Z_THRESHOLD = 0.4  # metres; standing pelvis is ~0.75m
+
+    def check_and_recover(self) -> bool:
+        """
+        Check if the robot has fallen and, if so, reset it to the initial
+        standing keyframe.
+
+        Returns True if recovery was triggered, False otherwise.
+        """
+        if not self._running:
+            return False
+
+        model, data, _ = self.get_mujoco_access()
+        pelvis_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "pelvis"
+        )
+        pelvis_z = data.xpos[pelvis_id][2]
+
+        if pelvis_z >= self._FALL_PELVIS_Z_THRESHOLD:
+            return False
+
+        print(
+            f"[SimBridge] Fall detected (pelvis z={pelvis_z:.3f}m). "
+            f"Resetting to standing keyframe..."
+        )
+        # Reset to the first keyframe (standing pose)
+        mujoco.mj_resetDataKeyframe(model, data, 0)
+        mujoco.mj_forward(model, data)
+        print("[SimBridge] Recovery complete — robot reset to standing pose.")
+        return True
+
+    def reset_position(self) -> None:
+        """Reset robot to initial standing pose at origin."""
+        if not self._running:
+            return
+        model, data, _ = self.get_mujoco_access()
+        mujoco.mj_resetDataKeyframe(model, data, 0)
+        mujoco.mj_forward(model, data)
+        self._held_geom_id = None
+        self._held_geom_original_pos = None
+        print("[SimBridge] Robot position reset to origin.")
+
+    # ------------------------------------------------------------------
+    # Backflip action
+    # ------------------------------------------------------------------
+    def send_backflip(self) -> None:
+        """
+        Perform a backflip.
+
+        Tries ``Action.from_str("BACKFLIP")`` first.  If the *bri* library
+        does not have that action, we apply a strong upward + backward-pitch
+        impulse directly to the pelvis body in MuJoCo, creating a visually
+        compelling backflip.  The fall-recovery system (``check_and_recover``)
+        will catch any bad landings.
+        """
+        if not self._running:
+            return
+        try:
+            action = Action.from_str("BACKFLIP")
+            self._controller.set_action(action)
+            print("[SimBridge] BACKFLIP (native action)")
+        except (ValueError, KeyError, AttributeError):
+            # Fallback: apply impulse directly via MuJoCo
+            model, data, _ = self.get_mujoco_access()
+            # qvel layout for a free joint root body:
+            #   [0:3] = linear velocity (x, y, z)
+            #   [3:6] = angular velocity (wx, wy, wz)
+            # We want upward z velocity and backward pitch (rotation about y).
+            data.qvel[2] = 5.0    # upward velocity  (m/s)
+            data.qvel[4] = -8.0   # backward pitch   (rad/s)
+            print("[SimBridge] BACKFLIP (impulse fallback: z_vel=5.0, pitch=-8.0)")
 
     def run_trial(self, npz_path: str, realtime: bool = True) -> list[ActionLogEntry]:
         """

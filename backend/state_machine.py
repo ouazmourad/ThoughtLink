@@ -25,8 +25,10 @@ class RobotAction(Enum):
     MOVE_BACKWARD = "MOVE_BACKWARD"
     GRAB = "GRAB"
     RELEASE = "RELEASE"
+    HOLD = "HOLD"
     STOP = "STOP"
     EMERGENCY_STOP = "EMERGENCY_STOP"
+    BACKFLIP = "BACKFLIP"
 
 
 class OrchestrationPhase(Enum):
@@ -40,6 +42,7 @@ class OrchestrationAction(Enum):
     MOVE_TO = "MOVE_TO"
     CARRY_TO = "CARRY_TO"
     STACK_TO = "STACK_TO"
+    BACKFLIP = "BACKFLIP"
 
 
 ORCHESTRATION_ACTIONS = list(OrchestrationAction)
@@ -157,9 +160,17 @@ class GearStateMachine:
                 # Same action -> toggle OFF
                 self.state.toggled_action = None
                 self.state.toggled_class = None
-                result["action"] = RobotAction.IDLE
+                # When toggling HOLD off, send RELEASE to drop the item
+                if action == RobotAction.HOLD:
+                    result["action"] = RobotAction.RELEASE
+                else:
+                    result["action"] = RobotAction.IDLE
             else:
                 # Different action or new -> auto-cancel previous, toggle ON
+                # If we had HOLD toggled and are switching, release first
+                if self.state.toggled_action == RobotAction.HOLD:
+                    # Will be handled by sim as a one-shot release
+                    pass
                 self.state.toggled_action = action
                 self.state.toggled_class = bc
                 result["action"] = action
@@ -271,8 +282,8 @@ class GearStateMachine:
         return RobotAction.IDLE
 
     def _peek_grab(self) -> RobotAction:
-        """Return GRAB or RELEASE based on current holding state (without toggling)."""
-        return RobotAction.RELEASE if self.state.holding_item else RobotAction.GRAB
+        """Return HOLD — a toggle action that grabs on activate and releases on deactivate."""
+        return RobotAction.HOLD
 
     def resolve_brain_command(self, brain_class: str) -> RobotAction:
         """Legacy: map a brain signal class + current gear state -> robot action.
@@ -297,13 +308,13 @@ class GearStateMachine:
         return RobotAction.IDLE
 
     def _toggle_grab(self) -> RobotAction:
-        """Toggle grab/release in neutral gear."""
+        """Toggle hold in neutral gear (legacy path)."""
         if self.state.holding_item:
             self.state.holding_item = False
             return RobotAction.RELEASE
         else:
             self.state.holding_item = True
-            return RobotAction.GRAB
+            return RobotAction.HOLD
 
     # --- Orchestration sub-methods ---
 
