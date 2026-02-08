@@ -155,6 +155,25 @@ class SimulationBridge:
         """Check if simulation is active."""
         return self._running
 
+    def get_mujoco_access(self):
+        """Return (model, data, viewer) from the underlying SimBackend."""
+        backend = self._controller._backend
+        return backend._model, backend._data, backend._viewer
+
+    def get_robot_state(self):
+        """Return (robot_xy as ndarray, yaw_angle as float) from pelvis body."""
+        import mujoco
+        model, data, _ = self.get_mujoco_access()
+        pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+        pos = data.xpos[pelvis_id]
+        robot_xy = np.array([pos[0], pos[1]])
+        quat = data.xquat[pelvis_id]
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        yaw = np.arctan2(siny_cosp, cosy_cosp)
+        return robot_xy, float(yaw)
+
     def send_action(self, action_name: str) -> None:
         """
         Send a discrete action to the robot.
