@@ -1,10 +1,11 @@
 """
 Simulation Bridge — wraps Mourad's SimulationBridge for the control loop.
 
-Uses the existing simulation/bridge.py::SimulationBridge which connects
-to the bri Controller (MuJoCo humanoid sim).
+Supports multi-robot: primary robot uses real SimulationBridge,
+secondary robots use dead-reckoning position updates.
 """
 
+import math
 import sys
 from pathlib import Path
 from .state_machine import RobotAction
@@ -42,18 +43,27 @@ ACTION_TO_BRI_NAME = {
     RobotAction.IDLE: "STOP",
 }
 
+# Dead-reckoning constants (per tick at 10Hz)
+_DR_MOVE_SPEED = 0.06   # meters per tick
+_DR_TURN_SPEED = 0.06   # radians per tick
+_DR_FLOOR_LIMIT = 7.5   # max coordinate
+
 
 class SimBridge:
-    """Adapter that wraps Mourad's SimulationBridge for the gear-based control loop."""
+    """Adapter that wraps Mourad's SimulationBridge for the gear-based control loop.
+    Supports multi-robot: primary (robot_0) uses real sim, others use dead-reckoning.
+    """
 
     def __init__(self):
         self.bridge = None
         self.running = False
         self.last_action = RobotAction.IDLE
-        self.robot_state = {
-            "position": [0, 0, 0],
-            "orientation": 0,
-            "status": "idle",
+
+        # Per-robot states — initialized for primary robot
+        self._robot_states: dict[str, dict] = {
+            "robot_0": {"position": [0, 0, 0], "orientation": 0, "status": "idle"},
+            "robot_1": {"position": [-3.0, 3.0, 0], "orientation": 1.57, "status": "idle"},
+            "robot_2": {"position": [3.0, 3.0, 0], "orientation": -1.57, "status": "idle"},
         }
 
     def start(self):
@@ -81,29 +91,64 @@ class SimBridge:
 
     def reset(self):
         self.last_action = RobotAction.IDLE
-        self.robot_state = {"position": [0, 0, 0], "orientation": 0, "status": "idle"}
+        self._robot_states = {
+            "robot_0": {"position": [0, 0, 0], "orientation": 0, "status": "idle"},
+            "robot_1": {"position": [-3.0, 3.0, 0], "orientation": 1.57, "status": "idle"},
+            "robot_2": {"position": [3.0, 3.0, 0], "orientation": -1.57, "status": "idle"},
+        }
 
-    def execute(self, action: RobotAction) -> dict:
-        """Send action to simulation, return robot state."""
+    def execute(self, action: RobotAction, robot_id: str = "robot_0") -> dict:
+        """Send action to simulation/dead-reckoning for a specific robot, return robot state."""
         self.last_action = action
         bri_name = ACTION_TO_BRI_NAME.get(action, "STOP")
 
-        if self.bridge and SIM_AVAILABLE:
+        if robot_id == "robot_0" and self.bridge and SIM_AVAILABLE:
+            # Primary robot uses real simulation
             try:
                 self.bridge.send_action(bri_name)
             except Exception as e:
                 print(f"[SimBridge] Error sending action: {e}")
 
-            # Sync position from MuJoCo simulation
             try:
                 robot_xy, yaw = self.bridge.get_robot_state()
-                self.robot_state["position"] = [float(robot_xy[0]), float(robot_xy[1]), 0]
-                self.robot_state["orientation"] = float(yaw)
+                self._robot_states["robot_0"]["position"] = [float(robot_xy[0]), float(robot_xy[1]), 0]
+                self._robot_states["robot_0"]["orientation"] = float(yaw)
             except Exception:
                 pass
+        else:
+            # Dead-reckoning for secondary robots (or stub mode for primary)
+            self._dead_reckon(robot_id, action)
 
-        self.robot_state["status"] = action.value.lower()
-        return self.robot_state
+        state = self._robot_states.get(robot_id, self._robot_states["robot_0"])
+        state["status"] = action.value.lower()
+        return state
+
+    def _dead_reckon(self, robot_id: str, action: RobotAction):
+        """Update robot position using simple dead-reckoning."""
+        state = self._robot_states.get(robot_id)
+        if not state:
+            return
+
+        pos = state["position"]
+        yaw = state["orientation"]
+
+        if action == RobotAction.MOVE_FORWARD:
+            pos[0] += math.cos(yaw) * _DR_MOVE_SPEED
+            pos[1] += math.sin(yaw) * _DR_MOVE_SPEED
+        elif action == RobotAction.MOVE_BACKWARD:
+            pos[0] -= math.cos(yaw) * _DR_MOVE_SPEED
+            pos[1] -= math.sin(yaw) * _DR_MOVE_SPEED
+        elif action == RobotAction.ROTATE_LEFT:
+            yaw += _DR_TURN_SPEED
+        elif action == RobotAction.ROTATE_RIGHT:
+            yaw -= _DR_TURN_SPEED
+
+        # Clamp to floor bounds
+        pos[0] = max(-_DR_FLOOR_LIMIT, min(_DR_FLOOR_LIMIT, pos[0]))
+        pos[1] = max(-_DR_FLOOR_LIMIT, min(_DR_FLOOR_LIMIT, pos[1]))
+
+        state["position"] = pos
+        state["orientation"] = yaw
 
     def stop(self):
         """Stop the simulation."""
@@ -114,15 +159,21 @@ class SimBridge:
                 pass
         self.running = False
 
-    def get_state(self) -> dict:
-        if self.bridge and SIM_AVAILABLE:
+    def get_state(self, robot_id: str = "robot_0") -> dict:
+        if robot_id == "robot_0" and self.bridge and SIM_AVAILABLE:
             try:
                 robot_xy, yaw = self.bridge.get_robot_state()
-                self.robot_state["position"] = [float(robot_xy[0]), float(robot_xy[1]), 0]
-                self.robot_state["orientation"] = float(yaw)
+                self._robot_states["robot_0"]["position"] = [float(robot_xy[0]), float(robot_xy[1]), 0]
+                self._robot_states["robot_0"]["orientation"] = float(yaw)
             except Exception:
                 pass
-        return self.robot_state
+        return self._robot_states.get(robot_id, self._robot_states["robot_0"])
+
+    def get_all_states(self) -> dict[str, dict]:
+        """Return states for all robots."""
+        # Sync primary from sim
+        self.get_state("robot_0")
+        return dict(self._robot_states)
 
     def is_running(self) -> bool:
         if self.bridge and SIM_AVAILABLE:

@@ -19,6 +19,7 @@
     --gear-neutral: #6b7280;
     --gear-forward: #22c55e;
     --gear-reverse: #ef4444;
+    --gear-orchestrate: #a855f7;
     --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
@@ -168,15 +169,15 @@ body {
 }
 
 .gear-label {
-    width: 64px;
-    height: 64px;
+    width: 52px;
+    height: 52px;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: 12px;
     border: 2px solid var(--border);
     font-family: var(--font-mono);
-    font-size: 1.75rem;
+    font-size: 1.5rem;
     font-weight: 800;
     color: var(--text-muted);
     transition: all 0.3s ease;
@@ -208,6 +209,13 @@ body {
     box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
 }
 
+.gear-label.active.orchestrate {
+    background: var(--gear-orchestrate);
+    color: #fff;
+    border-color: var(--gear-orchestrate);
+    box-shadow: 0 0 20px rgba(168, 85, 247, 0.4);
+}
+
 .gear-text {
     text-align: center;
     font-family: var(--font-mono);
@@ -220,6 +228,7 @@ body {
 .gear-text.neutral { color: var(--gear-neutral); }
 .gear-text.forward { color: var(--gear-forward); }
 .gear-text.reverse { color: var(--gear-reverse); }
+.gear-text.orchestrate { color: var(--gear-orchestrate); }
 
 /* Brain Decode Panel */
 .brain-panel {
@@ -781,6 +790,77 @@ body {
     margin-bottom: 4px;
     border-radius: 0 4px 4px 0;
     background: rgba(168, 85, 247, 0.05);
+}
+
+/* Toggle Indicator */
+.toggle-indicator {
+    display: none;
+    margin-top: 8px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    background: rgba(168, 85, 247, 0.15);
+    border: 1px solid var(--accent-purple);
+    color: var(--accent-purple);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: 1px;
+}
+
+/* Orchestration Overlay */
+.orchestration-overlay {
+    position: absolute;
+    top: 40px;
+    right: 16px;
+    background: rgba(10, 14, 23, 0.85);
+    border: 1px solid var(--accent-purple);
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-family: var(--font-mono);
+    z-index: 10;
+    backdrop-filter: blur(6px);
+    min-width: 180px;
+}
+
+.orch-phase {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--accent-purple);
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+.orch-options {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.orch-option {
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(100, 116, 139, 0.1);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    transition: all 0.15s;
+}
+
+.orch-option.selected {
+    background: rgba(168, 85, 247, 0.2);
+    border: 1px solid var(--accent-purple);
+    color: var(--accent-purple);
+}
+
+.orch-hint {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    text-align: center;
+    letter-spacing: 0.5px;
 }
 
 /* Deployment Footer */

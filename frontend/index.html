@@ -28,6 +28,7 @@
                 <div class="gear-label" id="gear-N">N</div>
                 <div class="gear-label" id="gear-F">F</div>
                 <div class="gear-label" id="gear-R">R</div>
+                <div class="gear-label" id="gear-O">O</div>
             </div>
             <div class="gear-text" id="gear-text">NEUTRAL</div>
 
@@ -44,6 +45,7 @@
                     <span><span class="brain-info-label">Cmd: </span><span id="brain-command">--</span></span>
                     <span id="stable-badge" class="stable-badge stable">STABLE</span>
                 </div>
+                <div class="toggle-indicator" id="toggle-indicator"></div>
             </div>
 
             <div class="holding-indicator">
@@ -62,6 +64,12 @@
                 <span class="nav-target" id="nav-target"></span>
                 <span class="nav-dist" id="nav-dist"></span>
                 <button class="nav-cancel-btn" onclick="cancelNav()">CANCEL</button>
+            </div>
+            <!-- Orchestration Overlay -->
+            <div class="orchestration-overlay" id="orchestration-overlay" style="display:none;">
+                <div class="orch-phase" id="orch-phase">SELECT ACTION</div>
+                <div class="orch-options" id="orch-options"></div>
+                <div class="orch-hint">L/R Fist: cycle | Both Fists 2s: confirm</div>
             </div>
             <div class="action-overlay idle" id="action-overlay">IDLE</div>
         </div>
@@ -130,14 +138,23 @@
                     <button class="ctrl-btn" id="btn-test-mode" onclick="toggleTestMode()">TEST EEG<span class="key-hint">Off</span></button>
                     <button class="ctrl-btn accent" onclick="sendFullReset()">FULL RESET</button>
                 </div>
-                <div class="card-header" style="margin-top: 10px;">Brain Simulator</div>
+                <div class="card-header" style="margin-top: 10px;">Brain Simulator (hold to activate)</div>
                 <div class="brain-sim-controls">
-                    <button class="ctrl-btn sim-btn" data-cls="0" onclick="simulateBrain(0)">R.FIST<span class="key-hint">Rot R</span></button>
-                    <button class="ctrl-btn sim-btn" data-cls="1" onclick="simulateBrain(1)">L.FIST<span class="key-hint">Rot L</span></button>
-                    <button class="ctrl-btn sim-btn" data-cls="2" onclick="simulateBrain(2)">BOTH<span class="key-hint">Gear</span></button>
-                    <button class="ctrl-btn sim-btn" data-cls="3" onclick="simulateBrain(3)">TONGUE<span class="key-hint">Shift</span></button>
-                    <button class="ctrl-btn sim-btn" data-cls="4" onclick="simulateBrain(4)">RELAX<span class="key-hint">Idle</span></button>
-                    <button class="ctrl-btn sim-btn-stop" id="btn-sim-stop" onclick="simulateBrain(null)">STOP SIM</button>
+                    <button class="ctrl-btn sim-btn" data-cls="0"
+                        onmousedown="simBrainStart(0)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()"
+                        ontouchstart="simBrainStart(0)" ontouchend="simBrainStop()">R.FIST<span class="key-hint">Rot R</span></button>
+                    <button class="ctrl-btn sim-btn" data-cls="1"
+                        onmousedown="simBrainStart(1)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()"
+                        ontouchstart="simBrainStart(1)" ontouchend="simBrainStop()">L.FIST<span class="key-hint">Rot L</span></button>
+                    <button class="ctrl-btn sim-btn" data-cls="2"
+                        onmousedown="simBrainStart(2)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()"
+                        ontouchstart="simBrainStart(2)" ontouchend="simBrainStop()">BOTH<span class="key-hint">Gear</span></button>
+                    <button class="ctrl-btn sim-btn" data-cls="3"
+                        onmousedown="simBrainStart(3)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()"
+                        ontouchstart="simBrainStart(3)" ontouchend="simBrainStop()">TONGUE<span class="key-hint">Shift</span></button>
+                    <button class="ctrl-btn sim-btn" data-cls="4"
+                        onmousedown="simBrainStart(4)" onmouseup="simBrainStop()" onmouseleave="simBrainStop()"
+                        ontouchstart="simBrainStart(4)" ontouchend="simBrainStop()">RELAX<span class="key-hint">Idle</span></button>
                 </div>
             </div>
         </div>
@@ -146,9 +163,9 @@
     <!-- Deployment Footer -->
     <div class="deploy-footer" id="deploy-footer">ThoughtLink v0.1 — Edge Server: loading... | Clients connected: 0</div>
 
-    <script src="components/eeg_chart.js?v=2"></script>
-    <script src="components/robot_view.js?v=2"></script>
-    <script src="components/voice_status.js?v=2"></script>
-    <script src="app.js?v=2"></script>
+    <script src="components/eeg_chart.js?v=3"></script>
+    <script src="components/robot_view.js?v=3"></script>
+    <script src="components/voice_status.js?v=3"></script>
+    <script src="app.js?v=3"></script>
 </body>
 </html>

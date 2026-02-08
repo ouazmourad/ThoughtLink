@@ -1,15 +1,21 @@
-"""Command Fusion — merges brain + voice commands into a single action."""
+"""Command Fusion — merges brain + voice commands into a single action.
+
+Uses GestureRecognizer for edge-triggered toggle control from brain signals.
+"""
 
 import time
 from .state_machine import GearStateMachine, RobotAction, Gear
+from .gesture import GestureRecognizer, GestureType
 from .config import VOICE_OVERRIDE_HOLD_S
 
 
 class CommandFusion:
     def __init__(self, state_machine: GearStateMachine):
         self.sm = state_machine
+        self.gesture = GestureRecognizer()
         self.last_emitted_action = RobotAction.IDLE
         self.voice_override_until = 0.0
+        self.last_gesture_result = None  # last handle_gesture() output
 
     def update(self, brain_result: dict | None, voice_command: dict | None) -> dict:
         """
@@ -17,12 +23,12 @@ class CommandFusion:
 
         brain_result: from BrainDecoder.predict()
             {"class": "Right Fist", "command": "...", "confidence": 0.84,
-             "stable_command": "ROTATE_RIGHT", "gated": False}
+             "stable_command": "ROTATE_RIGHT", "gated": False, "label": "Right Fist"}
 
         voice_command: parsed voice command dict or None
             {"command_type": "direct_override", "action": "MOVE_FORWARD", ...}
 
-        Returns: {"action": RobotAction, "source": "brain"|"voice"|"idle", ...}
+        Returns: {"action": RobotAction, "source": "brain_gesture"|"brain_toggle"|"voice"|"idle", ...}
         """
         now = time.time()
 
@@ -48,23 +54,49 @@ class CommandFusion:
                 "timestamp": now,
             }
 
-        # Priority 2: Brain commands (gear-dependent)
+        # Priority 2: Brain signals → gesture recognition → toggle control
+        brain_label = None
         if brain_result and not brain_result.get("gated", True):
-            stable = brain_result.get("stable_command")
-            if stable and stable != "IDLE":
-                brain_label = brain_result.get("label", str(brain_result["class"]))
-                action = self.sm.resolve_brain_command(brain_label)
-                self.sm.state.current_action = action
+            brain_label = brain_result.get("label")
 
-                self.last_emitted_action = action
-                return {
-                    "action": action,
-                    "source": "brain",
-                    "confidence": brain_result.get("confidence", 0),
-                    "brain_class": brain_label,
-                    "gear": self.sm.state.gear.value,
-                    "timestamp": now,
-                }
+        # Feed brain label into gesture recognizer every tick
+        gesture_event = self.gesture.update(brain_label)
+
+        if gesture_event is not None:
+            # Gesture completed — process through state machine
+            result = self.sm.handle_gesture(gesture_event)
+            self.last_gesture_result = result
+            action = result["action"]
+            self.sm.state.current_action = action
+            self.last_emitted_action = action
+
+            return {
+                "action": action,
+                "source": "brain_gesture",
+                "gesture_type": gesture_event.gesture_type.value,
+                "brain_class": gesture_event.brain_class,
+                "duration_s": gesture_event.duration_s,
+                "toggle_changed": result.get("toggle_changed", False),
+                "select_direction": gesture_event.select_direction,
+                "orchestration_event": result.get("orchestration_event"),
+                "orchestration_task": result.get("orchestration_task"),
+                "confidence": brain_result.get("confidence", 0) if brain_result else 0,
+                "gear": self.sm.state.gear.value,
+                "timestamp": now,
+            }
+
+        # No gesture this tick — sustain toggled action if one is active
+        if self.sm.state.toggled_action is not None:
+            action = self.sm.state.toggled_action
+            self.sm.state.current_action = action
+            self.last_emitted_action = action
+            return {
+                "action": action,
+                "source": "brain_toggle",
+                "confidence": brain_result.get("confidence", 0) if brain_result else 0,
+                "gear": self.sm.state.gear.value,
+                "timestamp": now,
+            }
 
         # Priority 3: No input -> IDLE
         if self.last_emitted_action != RobotAction.IDLE:
@@ -111,15 +143,23 @@ class CommandFusion:
             elif action_str == "SET_GEAR_NEUTRAL":
                 self.sm.set_gear(Gear.NEUTRAL)
                 return RobotAction.IDLE
+            elif action_str == "SET_GEAR_ORCHESTRATE":
+                self.sm.set_gear(Gear.ORCHESTRATE)
+                return RobotAction.IDLE
             elif action_str == "CANCEL_NAV":
-                # Signal cancellation — control_loop checks for this
                 return RobotAction.STOP
 
             return action_map.get(action_str)
 
-        # Automated NAVIGATE commands are handled by the control loop's autopilot,
-        # not here. Return None so fusion doesn't emit an action.
+        # Automated NAVIGATE commands are handled by the control loop's autopilot
         if command_type == "automated" and action_str == "NAVIGATE":
             return None
 
         return None
+
+    def reset(self):
+        """Reset fusion state."""
+        self.gesture.reset()
+        self.last_emitted_action = RobotAction.IDLE
+        self.voice_override_until = 0.0
+        self.last_gesture_result = None

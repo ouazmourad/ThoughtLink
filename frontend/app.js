@@ -22,6 +22,9 @@ let voiceEnabled = true;
 let testModeActive = false;
 let simBrainClass = null;  // null = off, 0-4 = simulated class
 let controlMode = 'direct'; // 'direct' = explicit commands, 'bci' = gear-dependent brain schema
+let currentToggledAction = null;
+let selectedRobot = 'robot_0';
+let allRobots = [];
 
 // ========================
 // WebSocket Connection
@@ -126,11 +129,16 @@ function handleServerMessage(msg) {
             simBrainClass = msg.class_index;
             updateSimBrainUI(simBrainClass);
             break;
+        case 'robot_selected':
+            selectedRobot = msg.robot_id;
+            break;
         case 'full_reset_ack':
             if (robotView) robotView.reset();
             tickCount = 0;
             simBrainClass = null;
+            currentToggledAction = null;
             updateSimBrainUI(null);
+            updateToggleIndicator(null);
             addLogEntry('system', 'FULL_RESET', 'Full system reset', Date.now() / 1000);
             break;
         default:
@@ -153,10 +161,21 @@ function handleStateUpdate(msg) {
     // Holding indicator
     updateHoldingIndicator(msg.holding_item);
 
-    // Robot view
+    // Toggle indicator
+    currentToggledAction = msg.toggled_action || null;
+    updateToggleIndicator(currentToggledAction);
+
+    // Multi-robot state
+    selectedRobot = msg.selected_robot || 'robot_0';
+    allRobots = msg.robots || [];
+
+    // Robot view — pass all robots
     if (robotView) {
-        robotView.updateState(msg.robot_state, msg.action);
+        robotView.updateState(msg.robot_state, msg.action, allRobots, selectedRobot);
     }
+
+    // Orchestration overlay
+    updateOrchestrationOverlay(msg.orchestration);
 
     // Metrics
     updateMetrics(msg.latency_ms, msg.action_source);
@@ -192,11 +211,10 @@ function updateGearDisplay(gear) {
     if (gear === currentGear) return;
     currentGear = gear;
 
-    const gears = { N: 'NEUTRAL', F: 'FORWARD', R: 'REVERSE' };
-    const gearMap = { NEUTRAL: 'N', FORWARD: 'F', REVERSE: 'R' };
-    const gearClasses = { NEUTRAL: 'neutral', FORWARD: 'forward', REVERSE: 'reverse' };
+    const gearMap = { NEUTRAL: 'N', FORWARD: 'F', REVERSE: 'R', ORCHESTRATE: 'O' };
+    const gearClasses = { NEUTRAL: 'neutral', FORWARD: 'forward', REVERSE: 'reverse', ORCHESTRATE: 'orchestrate' };
 
-    ['N', 'F', 'R'].forEach(g => {
+    ['N', 'F', 'R', 'O'].forEach(g => {
         const el = document.getElementById('gear-' + g);
         if (el) {
             const isActive = gearMap[gear] === g;
@@ -207,7 +225,7 @@ function updateGearDisplay(gear) {
     const gearText = document.getElementById('gear-text');
     if (gearText) {
         gearText.textContent = gear;
-        gearText.className = 'gear-text ' + gearClasses[gear];
+        gearText.className = 'gear-text ' + (gearClasses[gear] || '');
     }
 
     // Update BOTH button hint in BCI mode
@@ -245,6 +263,47 @@ function updateBrainPanel(brainClass, confidence, gated, action) {
             badgeEl.textContent = 'UNSTABLE';
             badgeEl.className = 'stable-badge unstable';
         }
+    }
+}
+
+function updateToggleIndicator(toggledAction) {
+    const el = document.getElementById('toggle-indicator');
+    if (!el) return;
+    if (toggledAction) {
+        el.textContent = 'TOGGLE: ' + toggledAction;
+        el.style.display = 'block';
+    } else {
+        el.textContent = '';
+        el.style.display = 'none';
+    }
+}
+
+function updateOrchestrationOverlay(orch) {
+    const overlay = document.getElementById('orchestration-overlay');
+    if (!overlay) return;
+
+    if (!orch) {
+        overlay.style.display = 'none';
+        return;
+    }
+
+    overlay.style.display = 'block';
+    const phaseEl = document.getElementById('orch-phase');
+    const optionsEl = document.getElementById('orch-options');
+
+    if (phaseEl) {
+        phaseEl.textContent = orch.phase === 'SELECTING_ACTION' ? 'SELECT ACTION' : 'SELECT LANDMARK';
+    }
+
+    if (optionsEl) {
+        var items = orch.phase === 'SELECTING_ACTION' ? orch.actions : orch.landmarks;
+        var selectedIdx = orch.phase === 'SELECTING_ACTION' ? orch.action_index : orch.landmark_index;
+        var html = '';
+        for (var i = 0; i < items.length; i++) {
+            var cls = i === selectedIdx ? 'orch-option selected' : 'orch-option';
+            html += '<div class="' + cls + '">' + items[i] + '</div>';
+        }
+        optionsEl.innerHTML = html;
     }
 }
 
@@ -289,7 +348,7 @@ function updateMetrics(latencyMs, source) {
     if (ticksEl) ticksEl.textContent = tickCount;
     if (sourceEl) {
         sourceEl.textContent = (source || '--').toUpperCase();
-        const colors = { brain: '#06b6d4', voice: '#a855f7', idle: '#64748b', manual: '#eab308' };
+        const colors = { brain_gesture: '#a855f7', brain_toggle: '#06b6d4', brain: '#06b6d4', voice: '#a855f7', idle: '#64748b', manual: '#eab308' };
         sourceEl.style.color = colors[source] || '#64748b';
     }
 }
@@ -349,6 +408,7 @@ function toggleControlMode() {
 function getBothHint() {
     if (currentGear === 'FORWARD') return 'FWD';
     if (currentGear === 'REVERSE') return 'BWD';
+    if (currentGear === 'ORCHESTRATE') return 'Orch';
     return 'Grab';
 }
 
@@ -414,6 +474,8 @@ function sendFullReset() {
     var log = document.getElementById('command-log');
     if (log) { log.innerHTML = ''; logEntryCount = 0; }
     tickCount = 0;
+    currentToggledAction = null;
+    updateToggleIndicator(null);
 }
 
 function updateToggleButton(btnId, active) {
@@ -429,11 +491,21 @@ function updateToggleButton(btnId, active) {
 }
 
 // ========================
-// Brain Simulator
+// Brain Simulator (press-and-hold)
 // ========================
 
-function simulateBrain(classIndex) {
-    wsSend({ type: 'simulate_brain', class_index: classIndex });
+let _simBrainActive = false;
+
+function simBrainStart(classIndex) {
+    if (_simBrainActive) return; // prevent duplicate
+    _simBrainActive = true;
+    wsSend({ type: 'sim_brain_start', class_index: classIndex });
+}
+
+function simBrainStop() {
+    if (!_simBrainActive) return;
+    _simBrainActive = false;
+    wsSend({ type: 'sim_brain_stop' });
 }
 
 function updateSimBrainUI(activeClass) {
@@ -445,14 +517,6 @@ function updateSimBrainUI(activeClass) {
             btn.classList.remove('sim-active');
         }
     });
-    var stopBtn = document.getElementById('btn-sim-stop');
-    if (stopBtn) {
-        if (activeClass !== null) {
-            stopBtn.classList.add('sim-running');
-        } else {
-            stopBtn.classList.remove('sim-running');
-        }
-    }
 }
 
 // ========================
@@ -528,10 +592,18 @@ function cancelNav() {
 }
 
 // ========================
+// Robot Selection (click on map)
+// ========================
+
+function selectRobot(robotId) {
+    wsSend({ type: 'select_robot', robot_id: robotId });
+}
+
+// ========================
 // Keyboard Controls
 // ========================
 
-// Reverse map: action → button text for highlight matching
+// Reverse map: action -> button text for highlight matching
 const ACTION_TO_BTN_TEXT = {
     'MOVE_FORWARD': ['FWD', 'BOTH'],
     'MOVE_BACKWARD': [],
@@ -582,7 +654,7 @@ const KEY_MAP_DIRECT = {
 const KEY_MAP_BCI = {
     'w': 'BOTH_FISTS',        // Both Fists (gear-dependent)
     'ArrowUp': 'BOTH_FISTS',
-    's': 'STOP',              // Relax → idle
+    's': 'STOP',              // Relax -> idle
     'ArrowDown': 'STOP',
     'a': 'ROTATE_LEFT',       // Left Fist
     'ArrowLeft': 'ROTATE_LEFT',
@@ -629,10 +701,6 @@ document.addEventListener('keyup', (e) => {
 });
 
 // ========================
-// Initialization
-// ========================
-
-// ========================
 // Server Info / Footer
 // ========================
 
@@ -657,6 +725,11 @@ window.addEventListener('DOMContentLoaded', () => {
     eegChart = new EEGChart('eeg-canvas');
     robotView = new RobotView('robot-canvas');
     voiceManager = new VoiceManager(handleVoiceTranscript);
+
+    // Wire up robot click-to-select callback
+    if (robotView) {
+        robotView.onRobotClick = selectRobot;
+    }
 
     // Set initial gear display
     updateGearDisplay('NEUTRAL');
