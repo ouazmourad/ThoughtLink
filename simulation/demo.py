@@ -14,6 +14,9 @@ Usage:
 
     # Keyboard control (manual testing):
     python simulation/demo.py --keyboard
+
+    # Factory robot mode (all features):
+    python simulation/demo.py --factory --scene factory
 """
 
 from __future__ import annotations
@@ -257,6 +260,120 @@ def run_multi_trial_demo(bridge: SimulationBridge, data_dir: Path, num_trials: i
         bridge.stop()
 
 
+def run_factory_mode(bridge: SimulationBridge):
+    """Interactive factory robot mode with all features."""
+    from simulation.factory_controller import FactoryController, TaskSequencer
+
+    print("\n[Demo] Factory Robot Mode")
+    print("  Controls:")
+    print("    W/A/S/D  = Forward / Left / Stop / Right")
+    print("    1-6      = Select waypoint (Shelf A, Shelf B, Conveyor, Table, Pallet 1, Pallet 2)")
+    print("    G        = Go to selected waypoint")
+    print("    P        = Start patrol       O = Pause/resume patrol   N = Skip patrol stop")
+    print("    K        = Grab nearest box   L = Release held box")
+    print("    M        = Start macro (Fetch to Pallet 2)")
+    print("    T        = Start macro (Shelf A to Table)")
+    print("    E        = Toggle emergency stop")
+    print("    C        = Cancel / abort (navigation, patrol, macro)")
+    print("    Q        = Quit")
+    print("  Tip: type multiple keys then Enter (e.g. 'wwwww' = 5x FORWARD)\n")
+
+    bridge.start()
+    time.sleep(1.0)
+
+    factory = FactoryController(bridge)
+    factory.start()
+
+    def _handle_key(key: str) -> bool:
+        """Handle a single-char command. Returns False to quit."""
+        if key in ("q",):
+            return False
+        elif key == "w":
+            factory.send_manual_action("FORWARD")
+        elif key == "a":
+            factory.send_manual_action("LEFT")
+        elif key == "d":
+            factory.send_manual_action("RIGHT")
+        elif key == "s":
+            factory.send_manual_action("STOP")
+        elif key in ("1", "2", "3", "4", "5", "6"):
+            idx = int(key) - 1
+            name = factory.select_waypoint(idx)
+            print(f"  -> Selected waypoint: {name}")
+        elif key == "g":
+            factory.go_to_selected()
+            print(f"  -> Navigating to {factory._navigator.selected_name}")
+        elif key == "p":
+            factory.start_patrol()
+            print("  -> Patrol started")
+        elif key == "o":
+            factory.toggle_patrol_pause()
+            paused = factory._patrol.paused
+            print(f"  -> Patrol {'PAUSED' if paused else 'RESUMED'}")
+        elif key == "n":
+            factory.skip_patrol_stop()
+            print(f"  -> Skipped to {factory._patrol.current_stop}")
+        elif key == "k":
+            box = factory.grab()
+            if box:
+                print(f"  -> Grabbed: {box}")
+            else:
+                print("  -> No box in reach")
+        elif key == "l":
+            factory.release()
+            print("  -> Released box")
+        elif key == "m":
+            ok = factory.start_macro("Fetch to Pallet 2")
+            print(f"  -> Macro 'Fetch to Pallet 2' {'started' if ok else 'not found'}")
+        elif key == "t":
+            ok = factory.start_macro("Shelf A to Table")
+            print(f"  -> Macro 'Shelf A to Table' {'started' if ok else 'not found'}")
+        elif key == "e":
+            factory.toggle_estop()
+            print(f"  -> E-stop {'ACTIVE' if factory._safety.estop_active else 'CLEARED'}")
+        elif key == "c":
+            factory.abort_macro()
+            factory.stop_patrol()
+            factory._navigator.cancel_navigation()
+            factory.set_mode("MANUAL")
+            factory.send_manual_action("STOP")
+            print("  -> Cancelled all; back to MANUAL")
+        return True
+
+    try:
+        while bridge.is_running():
+            try:
+                line = input("Factory> ").strip().lower()
+            except EOFError:
+                break
+
+            if not line:
+                continue
+
+            # Handle full-word commands
+            if line in ("quit", "exit"):
+                break
+
+            # Process each character as a separate command
+            last_action = None
+            for ch in line:
+                if not _handle_key(ch):
+                    factory.stop()
+                    bridge.stop()
+                    return
+                if ch in ("w", "a", "d", "s"):
+                    last_action = {"w": "FORWARD", "a": "LEFT", "d": "RIGHT", "s": "STOP"}[ch]
+
+            # Print summary for movement keys
+            if last_action:
+                print(f"  -> {last_action} (x{sum(1 for c in line if c in 'wads')})")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        factory.stop()
+        bridge.stop()
+
+
 def print_summary(log: list, gt_label: str):
     """Print a summary of the trial results."""
     if not log:
@@ -296,6 +413,7 @@ def main():
     parser = argparse.ArgumentParser(description="ThoughtLink Simulation Demo")
     parser.add_argument("--mock", action="store_true", help="Use mock decoder (no trained model needed)")
     parser.add_argument("--keyboard", action="store_true", help="Manual keyboard control mode")
+    parser.add_argument("--factory", action="store_true", help="Factory robot mode with all features")
     parser.add_argument("--model", type=str, default=None, help="Path to ONNX model for BrainDecoder")
     parser.add_argument("--config", type=str, default=None, help="Path to config.json for BrainDecoder")
     parser.add_argument("--trial", type=str, default=None, help="Path to a specific .npz trial file")
@@ -303,6 +421,16 @@ def main():
     parser.add_argument("--robot", type=str, default="g1", choices=["g1", "go2"], help="Robot type")
     parser.add_argument("--scene", type=str, default="factory", choices=["factory", "default"], help="Scene type (factory or default)")
     args = parser.parse_args()
+
+    # Factory and keyboard modes don't need data dir / decoder
+    if args.factory or args.keyboard:
+        bridge = SimulationBridge(decoder=None, robot=args.robot, scene=args.scene)
+        if args.factory:
+            run_factory_mode(bridge)
+            return
+        else:
+            run_keyboard_mode(bridge)
+            return
 
     # Find data directory
     data_dir = DATA_DIR
@@ -337,7 +465,7 @@ def main():
         except ImportError:
             print("[Error] Cannot import BrainDecoder. Is training/predict.py available?")
             sys.exit(1)
-    elif not args.mock and not args.keyboard:
+    elif not args.mock:
         print("[Demo] No model specified. Use --mock for mock decoder or --model for real decoder.")
         args.mock = True
 
@@ -345,9 +473,7 @@ def main():
     bridge = SimulationBridge(decoder=decoder, robot=args.robot, scene=args.scene)
 
     # Run selected mode
-    if args.keyboard:
-        run_keyboard_mode(bridge)
-    elif args.multi:
+    if args.multi:
         run_multi_trial_demo(bridge, data_dir)
     elif args.mock:
         run_mock_demo(bridge, trial_path)

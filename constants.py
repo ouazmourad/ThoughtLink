@@ -86,3 +86,55 @@ NUM_EPOCHS = 50
 BANDPASS_LOW = 1.0             # Hz
 BANDPASS_HIGH = 40.0           # Hz
 FILTER_ORDER = 4               # Butterworth filter order
+
+# === Factory Robot Constants ===
+FACTORY_WAYPOINTS = {
+    "Shelf A": (-3.5, -2.0),
+    "Shelf B": (3.5, -2.0),
+    "Conveyor": (0.0, -3.5),
+    "Table": (2.0, 1.5),
+    "Pallet 1": (-1.5, 1.0),
+    "Pallet 2": (1.5, 1.0),
+}
+FACTORY_WAYPOINT_ORDER = ["Shelf A", "Shelf B", "Conveyor", "Table", "Pallet 1", "Pallet 2"]
+FACTORY_PATROL_ROUTE = ["Pallet 1", "Shelf A", "Conveyor", "Shelf B", "Table", "Pallet 2"]
+
+# Grabbable / pushable box geom names
+FACTORY_GRABBABLE_BOXES = [
+    "conv_box1", "conv_box2", "conv_box3",
+    "p1_box1", "p1_box2", "p1_box3",
+    "table_box1", "table_box2",
+]
+FACTORY_PUSHABLE_BOXES = ["conv_box1", "conv_box2", "conv_box3"]
+
+# Safety thresholds (meters / radians / seconds)
+OBSTACLE_WARNING_DIST = 1.5
+OBSTACLE_DANGER_DIST = 0.6
+GRAB_REACH_DIST = 1.0
+WAYPOINT_ARRIVAL_DIST = 0.5
+WAYPOINT_ALIGN_THRESHOLD = 0.3
+ESTOP_HOLD_SECONDS = 2.0
+TRAIL_MIN_DISTANCE = 0.3
+NUM_TRAIL_DOTS = 100
+
+# Geofence zones: name -> (min_x, max_x, min_y, max_y)
+FACTORY_GEOFENCE_ZONES = {
+    "Back Wall": (-8, 8, -6.5, -5.5),
+}
+
+# Obstacle geom names for proximity checking
+FACTORY_OBSTACLE_GEOMS = [
+    "pillar_1", "pillar_2",
+    "bollard_1", "bollard_2", "bollard_3", "bollard_4",
+    "sA_upright_FL", "sA_upright_FR",
+    "sB_upright_FL", "sB_upright_FR",
+]
+
+# Status light colors: action -> [r, g, b, a]
+STATUS_COLORS = {
+    "FORWARD": [0.0, 0.9, 0.0, 0.8],
+    "LEFT":    [0.0, 0.4, 1.0, 0.8],
+    "RIGHT":   [1.0, 0.0, 0.0, 0.8],
+    "STOP":    [1.0, 0.9, 0.0, 0.8],
+    "GRAB":    [0.7, 0.0, 1.0, 0.8],
+}
