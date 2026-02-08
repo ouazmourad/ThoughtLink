@@ -162,6 +162,15 @@ async def _handle_client_message(message: dict, websocket: WebSocket):
             "timestamp": time.time(),
         })
 
+    elif msg_type == "simulate_brain":
+        class_index = message.get("class_index")  # int 0-4 or null to disable
+        _control_loop.set_sim_brain(class_index)
+        await broadcast({
+            "type": "sim_brain_update",
+            "class_index": _control_loop._sim_brain_class,
+            "timestamp": time.time(),
+        })
+
     elif msg_type == "set_gear":
         from backend.state_machine import Gear
         gear_str = message.get("gear", "NEUTRAL")

@@ -89,26 +89,11 @@
                 </div>
             </div>
 
-            <div class="card-header" style="margin-top: 12px;">Manual Controls</div>
-            <div class="manual-controls">
-                <div class="ctrl-btn" onclick="sendCommand('ROTATE_LEFT')">ROT L<span class="key-hint">A</span></div>
-                <div class="ctrl-btn" onclick="sendCommand('MOVE_FORWARD')">FWD<span class="key-hint">W</span></div>
-                <div class="ctrl-btn" onclick="sendCommand('ROTATE_RIGHT')">ROT R<span class="key-hint">D</span></div>
-                <div class="ctrl-btn" onclick="sendCommand('GRAB')">GRAB<span class="key-hint">E</span></div>
-                <div class="ctrl-btn" onclick="sendCommand('STOP')">STOP<span class="key-hint">S</span></div>
-                <div class="ctrl-btn" onclick="sendCommand('RELEASE')">REL<span class="key-hint">Q</span></div>
-                <div class="ctrl-btn accent" onclick="sendCommand('SHIFT_GEAR')">SHIFT<span class="key-hint">G</span></div>
-                <div class="ctrl-btn" onclick="sendCommand('BOTH_FISTS')">BOTH<span class="key-hint">Space</span></div>
-                <div class="ctrl-btn" onclick="sendReset()">RESET<span class="key-hint">R</span></div>
+            <div class="card-header" style="margin-top: 12px;">
+                Manual Controls
+                <span class="mode-badge" id="control-mode-badge" onclick="toggleControlMode()">DIRECT [M]</span>
             </div>
-
-            <div class="card-header" style="margin-top: 12px;">Debug</div>
-            <div class="debug-controls">
-                <button class="ctrl-btn active-toggle" id="btn-brain" onclick="toggleBrain()">BRAIN<span class="key-hint">On</span></button>
-                <button class="ctrl-btn active-toggle" id="btn-voice" onclick="toggleVoice()">VOICE<span class="key-hint">On</span></button>
-                <button class="ctrl-btn" id="btn-test-mode" onclick="toggleTestMode()">TEST EEG<span class="key-hint">Off</span></button>
-                <button class="ctrl-btn accent" onclick="sendFullReset()">FULL RESET</button>
-            </div>
+            <div class="manual-controls" id="manual-controls-grid"></div>
         </div>
 
         <!-- CENTER BOTTOM: EEG Waveform -->
@@ -117,19 +102,39 @@
             <canvas id="eeg-canvas"></canvas>
         </div>
 
-        <!-- RIGHT COLUMN BOTTOM: Voice Status -->
-        <div class="card voice-panel">
-            <div class="card-header">Voice Input</div>
-            <div class="voice-status">
-                <div class="mic-indicator" id="mic-indicator"></div>
-                <div class="mic-text" id="mic-text">Mic off</div>
-                <button class="ctrl-btn" onclick="toggleMic()" style="margin-left:auto; padding: 6px 12px;">Toggle Mic</button>
+        <!-- RIGHT COLUMN BOTTOM: Voice Status + Debug -->
+        <div class="right-bottom-stack">
+            <div class="card voice-panel">
+                <div class="card-header">Voice Input</div>
+                <div class="voice-status">
+                    <div class="mic-indicator" id="mic-indicator"></div>
+                    <div class="mic-text" id="mic-text">Mic off</div>
+                    <button class="ctrl-btn" onclick="toggleMic()" style="margin-left:auto; padding: 6px 12px;">Toggle Mic</button>
+                </div>
+                <div class="last-transcript">
+                    <div class="label">Last heard:</div>
+                    <div id="last-transcript-text">--</div>
+                </div>
+                <div class="voice-transcript-list" id="transcript-list"></div>
             </div>
-            <div class="last-transcript">
-                <div class="label">Last heard:</div>
-                <div id="last-transcript-text">--</div>
+            <div class="card debug-panel">
+                <div class="card-header">Debug</div>
+                <div class="debug-controls">
+                    <button class="ctrl-btn active-toggle" id="btn-brain" onclick="toggleBrain()">BRAIN<span class="key-hint">On</span></button>
+                    <button class="ctrl-btn active-toggle" id="btn-voice" onclick="toggleVoice()">VOICE<span class="key-hint">On</span></button>
+                    <button class="ctrl-btn" id="btn-test-mode" onclick="toggleTestMode()">TEST EEG<span class="key-hint">Off</span></button>
+                    <button class="ctrl-btn accent" onclick="sendFullReset()">FULL RESET</button>
+                </div>
+                <div class="card-header" style="margin-top: 10px;">Brain Simulator</div>
+                <div class="brain-sim-controls">
+                    <button class="ctrl-btn sim-btn" data-cls="0" onclick="simulateBrain(0)">R.FIST<span class="key-hint">Rot R</span></button>
+                    <button class="ctrl-btn sim-btn" data-cls="1" onclick="simulateBrain(1)">L.FIST<span class="key-hint">Rot L</span></button>
+                    <button class="ctrl-btn sim-btn" data-cls="2" onclick="simulateBrain(2)">BOTH<span class="key-hint">Gear</span></button>
+                    <button class="ctrl-btn sim-btn" data-cls="3" onclick="simulateBrain(3)">TONGUE<span class="key-hint">Shift</span></button>
+                    <button class="ctrl-btn sim-btn" data-cls="4" onclick="simulateBrain(4)">RELAX<span class="key-hint">Idle</span></button>
+                    <button class="ctrl-btn sim-btn-stop" id="btn-sim-stop" onclick="simulateBrain(null)">STOP SIM</button>
+                </div>
             </div>
-            <div class="voice-transcript-list" id="transcript-list"></div>
         </div>
     </div>
 

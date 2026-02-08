@@ -20,6 +20,8 @@ let currentAction = 'IDLE';
 let brainEnabled = true;
 let voiceEnabled = true;
 let testModeActive = false;
+let simBrainClass = null;  // null = off, 0-4 = simulated class
+let controlMode = 'direct'; // 'direct' = explicit commands, 'bci' = gear-dependent brain schema
 
 // ========================
 // WebSocket Connection
@@ -117,9 +119,15 @@ function handleServerMessage(msg) {
             updateToggleButton('btn-brain', brainEnabled);
             updateToggleButton('btn-voice', voiceEnabled);
             break;
+        case 'sim_brain_update':
+            simBrainClass = msg.class_index;
+            updateSimBrainUI(simBrainClass);
+            break;
         case 'full_reset_ack':
             if (robotView) robotView.reset();
             tickCount = 0;
+            simBrainClass = null;
+            updateSimBrainUI(null);
             addLogEntry('system', 'FULL_RESET', 'Full system reset', Date.now() / 1000);
             break;
         default:
@@ -197,6 +205,15 @@ function updateGearDisplay(gear) {
     if (gearText) {
         gearText.textContent = gear;
         gearText.className = 'gear-text ' + gearClasses[gear];
+    }
+
+    // Update BOTH button hint in BCI mode
+    if (controlMode === 'bci') {
+        var bothBtn = document.getElementById('btn-both');
+        if (bothBtn) {
+            var hint = bothBtn.querySelector('.key-hint');
+            if (hint) hint.textContent = 'W — ' + getBothHint();
+        }
     }
 }
 
@@ -316,6 +333,52 @@ function sendReset() {
     wsSend({ type: 'reset' });
 }
 
+function toggleControlMode() {
+    controlMode = controlMode === 'direct' ? 'bci' : 'direct';
+    renderManualControls();
+}
+
+function getBothHint() {
+    if (currentGear === 'FORWARD') return 'FWD';
+    if (currentGear === 'REVERSE') return 'BWD';
+    return 'Grab';
+}
+
+function renderManualControls() {
+    var grid = document.getElementById('manual-controls-grid');
+    var badge = document.getElementById('control-mode-badge');
+    if (!grid) return;
+
+    if (controlMode === 'bci') {
+        if (badge) {
+            badge.textContent = 'BCI [M]';
+            badge.classList.add('mode-bci');
+        }
+        grid.innerHTML =
+            '<div class="ctrl-btn" onclick="sendCommand(\'ROTATE_LEFT\')">L.FIST<span class="key-hint">A — Rot L</span></div>' +
+            '<div class="ctrl-btn accent" id="btn-both" onclick="sendCommand(\'BOTH_FISTS\')">BOTH<span class="key-hint">W — ' + getBothHint() + '</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'ROTATE_RIGHT\')">R.FIST<span class="key-hint">D — Rot R</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'SHIFT_GEAR\')">TONGUE<span class="key-hint">G — Shift</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'STOP\')">RELAX<span class="key-hint">S — Idle</span></div>' +
+            '<div class="ctrl-btn" onclick="sendReset()">RESET<span class="key-hint">R</span></div>';
+    } else {
+        if (badge) {
+            badge.textContent = 'DIRECT [M]';
+            badge.classList.remove('mode-bci');
+        }
+        grid.innerHTML =
+            '<div class="ctrl-btn" onclick="sendCommand(\'ROTATE_LEFT\')">ROT L<span class="key-hint">A</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'MOVE_FORWARD\')">FWD<span class="key-hint">W</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'ROTATE_RIGHT\')">ROT R<span class="key-hint">D</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'GRAB\')">GRAB<span class="key-hint">E</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'STOP\')">STOP<span class="key-hint">S</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'RELEASE\')">REL<span class="key-hint">Q</span></div>' +
+            '<div class="ctrl-btn accent" onclick="sendCommand(\'SHIFT_GEAR\')">SHIFT<span class="key-hint">G</span></div>' +
+            '<div class="ctrl-btn" onclick="sendCommand(\'BOTH_FISTS\')">BOTH<span class="key-hint">Space</span></div>' +
+            '<div class="ctrl-btn" onclick="sendReset()">RESET<span class="key-hint">R</span></div>';
+    }
+}
+
 // ========================
 // Debug Controls
 // ========================
@@ -355,6 +418,33 @@ function updateToggleButton(btnId, active) {
     }
     var hint = btn.querySelector('.key-hint');
     if (hint) hint.textContent = active ? 'On' : 'Off';
+}
+
+// ========================
+// Brain Simulator
+// ========================
+
+function simulateBrain(classIndex) {
+    wsSend({ type: 'simulate_brain', class_index: classIndex });
+}
+
+function updateSimBrainUI(activeClass) {
+    document.querySelectorAll('.sim-btn').forEach(function(btn) {
+        var cls = parseInt(btn.getAttribute('data-cls'));
+        if (activeClass !== null && cls === activeClass) {
+            btn.classList.add('sim-active');
+        } else {
+            btn.classList.remove('sim-active');
+        }
+    });
+    var stopBtn = document.getElementById('btn-sim-stop');
+    if (stopBtn) {
+        if (activeClass !== null) {
+            stopBtn.classList.add('sim-running');
+        } else {
+            stopBtn.classList.remove('sim-running');
+        }
+    }
 }
 
 // ========================
@@ -401,34 +491,58 @@ function handleVoiceTranscript(text, confidence) {
 // Keyboard Controls
 // ========================
 
+const KEY_MAP_DIRECT = {
+    'w': 'MOVE_FORWARD',
+    'ArrowUp': 'MOVE_FORWARD',
+    's': 'STOP',
+    'ArrowDown': 'STOP',
+    'a': 'ROTATE_LEFT',
+    'ArrowLeft': 'ROTATE_LEFT',
+    'd': 'ROTATE_RIGHT',
+    'ArrowRight': 'ROTATE_RIGHT',
+    'x': 'MOVE_BACKWARD',
+    'e': 'GRAB',
+    'q': 'RELEASE',
+    'g': 'SHIFT_GEAR',
+    ' ': 'BOTH_FISTS',
+};
+
+const KEY_MAP_BCI = {
+    'w': 'BOTH_FISTS',        // Both Fists (gear-dependent)
+    'ArrowUp': 'BOTH_FISTS',
+    's': 'STOP',              // Relax → idle
+    'ArrowDown': 'STOP',
+    'a': 'ROTATE_LEFT',       // Left Fist
+    'ArrowLeft': 'ROTATE_LEFT',
+    'd': 'ROTATE_RIGHT',      // Right Fist
+    'ArrowRight': 'ROTATE_RIGHT',
+    'g': 'SHIFT_GEAR',        // Tongue Tapping
+    ' ': 'BOTH_FISTS',
+};
+
 document.addEventListener('keydown', (e) => {
     // Don't capture if typing in an input
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-    const keyMap = {
-        'w': 'MOVE_FORWARD',
-        'ArrowUp': 'MOVE_FORWARD',
-        's': 'STOP',
-        'ArrowDown': 'STOP',
-        'a': 'ROTATE_LEFT',
-        'ArrowLeft': 'ROTATE_LEFT',
-        'd': 'ROTATE_RIGHT',
-        'ArrowRight': 'ROTATE_RIGHT',
-        'x': 'MOVE_BACKWARD',
-        'e': 'GRAB',
-        'q': 'RELEASE',
-        'g': 'SHIFT_GEAR',
-        ' ': 'BOTH_FISTS',  // Space = both fists action (gear-dependent)
-        'r': null, // reset
-    };
+    // Mode toggle
+    if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        toggleControlMode();
+        return;
+    }
+
+    // Reset
+    if (e.key === 'r') {
+        e.preventDefault();
+        sendReset();
+        return;
+    }
+
+    var keyMap = controlMode === 'bci' ? KEY_MAP_BCI : KEY_MAP_DIRECT;
 
     if (e.key in keyMap) {
         e.preventDefault();
-        if (e.key === 'r') {
-            sendReset();
-        } else {
-            sendCommand(keyMap[e.key]);
-        }
+        sendCommand(keyMap[e.key]);
     }
 });
 
@@ -464,6 +578,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // Set initial gear display
     updateGearDisplay('NEUTRAL');
+
+    // Render manual controls for initial mode
+    renderManualControls();
 
     // Connect WebSocket
     connectWebSocket();

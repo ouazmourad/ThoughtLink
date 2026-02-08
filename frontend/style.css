@@ -105,6 +105,36 @@ body {
     letter-spacing: 1.5px;
     color: var(--text-muted);
     margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mode-badge {
+    font-size: 0.6rem;
+    font-family: var(--font-mono);
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(100, 116, 139, 0.15);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-left: auto;
+    letter-spacing: 0.5px;
+}
+
+.mode-badge:hover {
+    background: rgba(100, 116, 139, 0.3);
+    color: var(--text-primary);
+}
+
+.mode-badge.mode-bci {
+    background: rgba(168, 85, 247, 0.15);
+    color: var(--accent-purple);
+}
+
+.mode-badge.mode-bci:hover {
+    background: rgba(168, 85, 247, 0.3);
 }
 
 /* Gear Display */
@@ -114,6 +144,20 @@ body {
     display: flex;
     flex-direction: column;
     gap: 16px;
+    overflow-y: auto;
+}
+
+.gear-panel::-webkit-scrollbar {
+    width: 4px;
+}
+
+.gear-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.gear-panel::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
 }
 
 .gear-display {
@@ -386,6 +430,30 @@ body {
     margin-top: 2px;
 }
 
+/* Brain Simulator Controls */
+.brain-sim-controls {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+}
+
+.sim-btn.sim-active {
+    background: rgba(168, 85, 247, 0.2);
+    border-color: var(--accent-purple);
+    color: var(--accent-purple);
+}
+
+.sim-btn-stop {
+    border-color: var(--accent-red);
+    color: var(--text-muted);
+}
+
+.sim-btn-stop.sim-running {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: var(--accent-red);
+    color: var(--accent-red);
+}
+
 /* Center Column */
 .robot-view {
     grid-column: 2;
@@ -533,12 +601,59 @@ body {
     color: var(--text-secondary);
 }
 
-/* Voice Status */
-.voice-panel {
+/* Right Column Bottom Stack */
+.right-bottom-stack {
     grid-column: 3;
     grid-row: 2;
     display: flex;
     flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Voice Status */
+.voice-panel {
+    flex: 6;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.voice-panel::-webkit-scrollbar {
+    width: 4px;
+}
+
+.voice-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.voice-panel::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
+}
+
+/* Debug Panel */
+.debug-panel {
+    flex: 4;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.debug-panel::-webkit-scrollbar {
+    width: 4px;
+}
+
+.debug-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.debug-panel::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
 }
 
 .voice-status {
@@ -626,9 +741,38 @@ body {
 }
 
 /* Responsive */
+
+/* Smaller laptops (1366px, 1440px screens) */
+@media (max-width: 1400px) {
+    .dashboard {
+        grid-template-columns: 270px 1fr 300px;
+        gap: 10px;
+        padding: 10px;
+    }
+    .metric-value {
+        font-size: 1.2rem;
+    }
+    .card {
+        padding: 14px;
+    }
+}
+
+/* Tablet landscape / small laptops */
 @media (max-width: 1200px) {
     .dashboard {
-        grid-template-columns: 250px 1fr 280px;
+        grid-template-columns: 230px 1fr 260px;
+        gap: 8px;
+        padding: 8px;
+    }
+    .header {
+        padding: 10px 16px;
+    }
+    .header-title {
+        font-size: 1.1rem;
+    }
+    .card {
+        padding: 12px;
+        border-radius: 10px;
     }
     .gear-display {
         gap: 8px;
@@ -649,16 +793,173 @@ body {
     .brain-class {
         font-size: 1.1rem;
     }
+    .metric-value {
+        font-size: 1.1rem;
+    }
+    .metric-label {
+        font-size: 0.6rem;
+    }
+    .ctrl-btn {
+        padding: 8px;
+        font-size: 0.7rem;
+    }
+    .command-log {
+        font-size: 0.7rem;
+    }
+    .action-overlay {
+        font-size: 0.85rem;
+        padding: 6px 14px;
+    }
+    .confidence-value {
+        font-size: 0.8rem;
+    }
+    .voice-status {
+        padding: 8px;
+        gap: 8px;
+    }
+    .mic-text {
+        font-size: 0.8rem;
+    }
+    .last-transcript {
+        padding: 8px;
+        font-size: 0.8rem;
+    }
 }
 
+/* Narrower laptops / large tablets */
+@media (max-width: 1024px) {
+    .dashboard {
+        grid-template-columns: 200px 1fr 220px;
+        gap: 8px;
+        padding: 8px;
+        height: calc(100vh - 49px - 20px);
+    }
+    .header {
+        padding: 8px 12px;
+    }
+    .header-title {
+        font-size: 1rem;
+    }
+    .connection-status {
+        font-size: 0.75rem;
+    }
+    .card-header {
+        font-size: 0.65rem;
+        margin-bottom: 8px;
+    }
+    .gear-label {
+        width: 40px;
+        height: 40px;
+        font-size: 1.1rem;
+        border-radius: 8px;
+    }
+    .gear-text {
+        font-size: 0.8rem;
+    }
+    .brain-class {
+        font-size: 1rem;
+    }
+    .confidence-bar {
+        height: 10px;
+    }
+    .metric-item {
+        padding: 8px;
+    }
+    .metric-value {
+        font-size: 1rem;
+    }
+    .ctrl-btn {
+        padding: 6px 4px;
+        font-size: 0.65rem;
+    }
+    .ctrl-btn .key-hint {
+        font-size: 0.55rem;
+    }
+    .manual-controls {
+        gap: 4px;
+    }
+    .debug-controls {
+        gap: 4px;
+    }
+    .log-entry {
+        gap: 6px;
+        padding: 3px 4px;
+    }
+    .holding-indicator {
+        padding: 8px;
+        gap: 8px;
+    }
+    .holding-icon {
+        font-size: 1.2rem;
+        width: 28px;
+    }
+    .holding-text {
+        font-size: 0.8rem;
+    }
+    .transcript-entry {
+        font-size: 0.7rem;
+        padding: 4px 6px;
+    }
+    .deploy-footer {
+        font-size: 0.65rem;
+        padding: 3px 16px;
+    }
+}
+
+/* Tablet portrait / single column */
 @media (max-width: 900px) {
+    body {
+        overflow: auto;
+        height: auto;
+    }
     .dashboard {
         grid-template-columns: 1fr;
         grid-template-rows: auto;
         overflow-y: auto;
         height: auto;
+        gap: 10px;
+        padding: 10px;
     }
-    body { overflow: auto; }
+    /* Reset all explicit grid placements */
+    .gear-panel {
+        grid-column: auto;
+        grid-row: auto;
+        gap: 8px;
+    }
+    .robot-view {
+        grid-column: auto;
+        grid-row: auto;
+        min-height: 300px;
+    }
+    .command-log-panel {
+        grid-column: auto;
+        grid-row: auto;
+        max-height: 250px;
+    }
+    .left-bottom {
+        grid-column: auto;
+        grid-row: auto;
+    }
+    .eeg-panel {
+        grid-column: auto;
+        grid-row: auto;
+        min-height: 200px;
+    }
+    .right-bottom-stack {
+        grid-column: auto;
+        grid-row: auto;
+    }
+    .header {
+        padding: 10px 16px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .header-title {
+        font-size: 1rem;
+    }
+    .card {
+        padding: 14px;
+    }
     .gear-display {
         gap: 8px;
         margin: 4px 0;
@@ -672,9 +973,6 @@ body {
     .gear-text {
         font-size: 0.85rem;
     }
-    .gear-panel {
-        gap: 8px;
-    }
     .brain-class {
         font-size: 1rem;
     }
@@ -684,5 +982,70 @@ body {
     .holding-icon {
         font-size: 1.2rem;
         width: 28px;
+    }
+    .manual-controls {
+        gap: 6px;
+    }
+    .ctrl-btn {
+        padding: 10px;
+        font-size: 0.75rem;
+    }
+    .robot-canvas-container {
+        height: 280px;
+    }
+    #eeg-canvas {
+        height: 180px;
+    }
+    .deploy-footer {
+        position: static;
+        margin-top: 8px;
+    }
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+    .dashboard {
+        padding: 6px;
+        gap: 8px;
+    }
+    .header {
+        padding: 8px 10px;
+    }
+    .header-title {
+        font-size: 0.9rem;
+        letter-spacing: 0;
+    }
+    .connection-status {
+        font-size: 0.7rem;
+    }
+    .card {
+        padding: 10px;
+        border-radius: 8px;
+    }
+    .gear-label {
+        width: 38px;
+        height: 38px;
+        font-size: 1rem;
+        border-radius: 6px;
+    }
+    .metrics-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+    }
+    .metric-value {
+        font-size: 1rem;
+    }
+    .manual-controls {
+        gap: 4px;
+    }
+    .ctrl-btn {
+        padding: 8px 4px;
+        font-size: 0.7rem;
+    }
+    .robot-canvas-container {
+        height: 220px;
+    }
+    #eeg-canvas {
+        height: 150px;
     }
 }

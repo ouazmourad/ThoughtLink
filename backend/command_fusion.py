@@ -52,8 +52,8 @@ class CommandFusion:
         if brain_result and not brain_result.get("gated", True):
             stable = brain_result.get("stable_command")
             if stable and stable != "IDLE":
-                brain_class = brain_result["class"]
-                action = self.sm.resolve_brain_command(brain_class)
+                brain_label = brain_result.get("label", str(brain_result["class"]))
+                action = self.sm.resolve_brain_command(brain_label)
                 self.sm.state.current_action = action
 
                 self.last_emitted_action = action
@@ -61,7 +61,7 @@ class CommandFusion:
                     "action": action,
                     "source": "brain",
                     "confidence": brain_result.get("confidence", 0),
-                    "brain_class": brain_class,
+                    "brain_class": brain_label,
                     "gear": self.sm.state.gear.value,
                     "timestamp": now,
                 }

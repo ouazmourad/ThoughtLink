@@ -70,6 +70,9 @@ class ControlLoop:
         self._test_mode = False
         self._test_eeg_source = None
 
+        # Brain simulator (bypasses EEG + classifier entirely)
+        self._sim_brain_class = None  # None = off, 0-4 = simulated class index
+
         # Voice command queue
         self._voice_queue: list[dict] = []
         self._voice_lock = asyncio.Lock()
@@ -149,6 +152,18 @@ class ControlLoop:
             self._test_eeg_source = None
             print("[ControlLoop] Test mode OFF")
 
+    def set_sim_brain(self, class_index: int | None):
+        """Set simulated brain class (0-4) or None to disable.
+        Bypasses EEG source + classifier entirely."""
+        if class_index is not None and not (0 <= class_index < len(LABEL_NAMES)):
+            print(f"[ControlLoop] Invalid sim brain class: {class_index}")
+            return
+        self._sim_brain_class = class_index
+        if class_index is not None:
+            print(f"[ControlLoop] Brain sim: {LABEL_NAMES[class_index]} (class {class_index})")
+        else:
+            print("[ControlLoop] Brain sim OFF")
+
     def full_reset(self):
         """Reset all subsystems to initial state."""
         self.state_machine.reset()
@@ -161,6 +176,7 @@ class ControlLoop:
         if self._brain_decoder:
             self._brain_decoder.reset()
         self.fusion.voice_override_until = 0.0
+        self._sim_brain_class = None
         self.latencies.clear()
         self.tick_count = 0
         print("[ControlLoop] Full reset complete")
@@ -169,20 +185,41 @@ class ControlLoop:
         """Single tick of the control loop."""
         tick_start = time.time()
 
-        # 1. Get EEG prediction
-        source = self._test_eeg_source if self._test_mode else self.eeg_source
-        eeg_window = source.get_latest_window() if source else None
+        # 1. Get EEG prediction (or use brain simulator)
+        eeg_window = None
         brain_result = None
 
-        if eeg_window is not None and self._brain_decoder:
-            try:
-                brain_result = self._brain_decoder.predict(eeg_window)
-            except Exception as e:
-                print(f"[ControlLoop] Brain decoder error: {e}")
+        if self._sim_brain_class is not None and self.brain_enabled:
+            # Brain simulator: bypass EEG + classifier, inject directly
+            sim_cls = self._sim_brain_class
+            brain_result = {
+                "class": sim_cls,
+                "label": LABEL_NAMES[sim_cls],
+                "command": BRAIN_LABEL_TO_COMMAND.get(sim_cls, "STOP"),
+                "confidence": 0.95,
+                "probabilities": {LABEL_NAMES[i]: (0.95 if i == sim_cls else 0.01)
+                                  for i in range(len(LABEL_NAMES))},
+                "latency_ms": 0,
+                "stable_command": BRAIN_LABEL_TO_COMMAND.get(sim_cls, "STOP"),
+                "gated": False,
+                "switched": False,
+            }
+            # Still get EEG window for waveform display
+            source = self._test_eeg_source if self._test_mode else self.eeg_source
+            eeg_window = source.get_latest_window() if source else None
+        else:
+            source = self._test_eeg_source if self._test_mode else self.eeg_source
+            eeg_window = source.get_latest_window() if source else None
 
-        # Gate brain result if brain input is disabled
-        if not self.brain_enabled:
-            brain_result = None
+            if eeg_window is not None and self._brain_decoder:
+                try:
+                    brain_result = self._brain_decoder.predict(eeg_window)
+                except Exception as e:
+                    print(f"[ControlLoop] Brain decoder error: {e}")
+
+            # Gate brain result if brain input is disabled
+            if not self.brain_enabled:
+                brain_result = None
 
         # 2. Get voice command (non-blocking)
         voice_command = None
@@ -210,7 +247,7 @@ class ControlLoop:
             "gear": self.state_machine.state.gear.value,
             "action": fused["action"].value,
             "action_source": fused["source"],
-            "brain_class": brain_result.get("class") if brain_result else None,
+            "brain_class": brain_result.get("label") if brain_result else None,
             "brain_confidence": brain_result.get("confidence", 0) if brain_result else 0,
             "brain_gated": brain_result.get("gated", True) if brain_result else True,
             "holding_item": self.state_machine.state.holding_item,
