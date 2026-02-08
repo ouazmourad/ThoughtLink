@@ -1,1 +1,1 @@
-# ThoughtLink Training Module
+# ThoughtLink — Training Pipeline

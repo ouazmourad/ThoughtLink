@@ -12,8 +12,13 @@ DATA_DIR = Path(os.environ.get(
     "THOUGHTLINK_DATA_DIR",
     str(Path.home() / "robot_control" / "data"),
 ))
-CHECKPOINT_DIR = PROJECT_ROOT / "training" / "checkpoints"
-RESULTS_DIR = PROJECT_ROOT / "training" / "results"
+TRAINING_DIR = PROJECT_ROOT / "training"
+CHECKPOINT_DIR = TRAINING_DIR / "checkpoints"
+RESULTS_DIR = TRAINING_DIR / "results"
+
+# Ensure output directories exist
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # === Label Mapping (handles dataset typos) ===
 LABEL_MAP = {
