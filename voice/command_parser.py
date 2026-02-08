@@ -33,6 +33,14 @@ class ParsedCommand:
     timestamp: float = field(default_factory=time.time)
 
 
+@dataclass
+class CommandSequence:
+    """A sequence of commands parsed from a compound voice instruction."""
+    steps: list[ParsedCommand]
+    raw_text: str = ""
+    confidence: float = 1.0
+
+
 # Direct override commands — keyword -> action
 _DIRECT_COMMANDS: list[tuple[list[str], str]] = [
     (["emergency stop"], "EMERGENCY_STOP"),
@@ -82,10 +90,22 @@ _LANDMARK_ALIASES: dict[str, str] = {
     "pallet one": "Pallet 1",
     "source pallet": "Pallet 1",
     "first pallet": "Pallet 1",
+    "palette 1": "Pallet 1",
+    "palette one": "Pallet 1",
     "pallet 2": "Pallet 2",
     "pallet two": "Pallet 2",
     "destination pallet": "Pallet 2",
     "second pallet": "Pallet 2",
+    "palette 2": "Pallet 2",
+    "palette two": "Pallet 2",
+    "pallet": "Pallet 2",
+    "palette": "Pallet 2",
+    "the pallet": "Pallet 2",
+    "the palette": "Pallet 2",
+    "pallet to": "Pallet 2",
+    "palette to": "Pallet 2",
+    "shelf to": "Shelf B",
+    "shelve to": "Shelf B",
 }
 
 # Regex patterns for extracting entities
@@ -101,6 +121,35 @@ _AUTO_TEMPLATES: list[tuple[list[str], str]] = [
     (["pick up", "grab", "get"], "PICKUP"),
     (["override", "take control", "manual control"], "OVERRIDE"),
 ]
+
+# Conjunction words that split compound commands
+_CONJUNCTIONS = re.compile(r'\b(?:and then|then|and|after that|afterwards)\b')
+
+# Compound template patterns:
+#   "take/bring/carry [the] [box/object/item] from <A> to <B>"
+#   "fetch [the] [box] from <A> to <B>"
+#   "move [the] [box] from <A> to <B>"
+_TRANSPORT_PATTERN = re.compile(
+    r'(?:take|bring|carry|fetch|move|deliver|transport)\s+'
+    r'(?:the\s+)?(?:box|object|item|package|thing)?\s*'
+    r'(?:from\s+)?(.+?)\s+to\s+(.+)',
+    re.IGNORECASE,
+)
+
+# "pick up [the] [box] at/from <A> and bring/take it to <B>"
+_PICKUP_DELIVER_PATTERN = re.compile(
+    r'(?:pick up|grab|get)\s+(?:the\s+)?(?:box|object|item|package|thing)?\s*'
+    r'(?:at|from|near)?\s*(.+?)\s+'
+    r'(?:and\s+)?(?:bring|take|carry|deliver|move)\s+(?:it\s+)?to\s+(.+)',
+    re.IGNORECASE,
+)
+
+# Action keywords for post-navigation actions
+_POST_NAV_ACTIONS = {
+    "grab": "GRAB", "pick up": "GRAB", "grasp": "GRAB", "get": "GRAB",
+    "release": "RELEASE", "drop": "RELEASE", "put down": "RELEASE",
+    "let go": "RELEASE", "place": "RELEASE", "deliver": "RELEASE",
+}
 
 
 def _resolve_landmark(text: str) -> str | None:
@@ -124,6 +173,126 @@ def _resolve_landmark(text: str) -> str | None:
 
 class CommandParser:
     """Parses voice transcripts into structured commands."""
+
+    def parse_sequence(self, transcript: str, confidence: float = 1.0) -> CommandSequence | None:
+        """
+        Parse a voice transcript into a sequence of commands.
+
+        Handles compound instructions like:
+          - "Go to shelf A and grab the box"          → [NAVIGATE(Shelf A), GRAB]
+          - "Take the box from the conveyor to pallet 2" → [NAV(Conveyor), GRAB, NAV(Pallet 2), RELEASE]
+          - "Pick up the box and bring it to the table"  → [GRAB, NAV(Table), RELEASE]
+          - "Move to shelf B then release"              → [NAVIGATE(Shelf B), RELEASE]
+
+        Returns None if nothing matches, or a CommandSequence with 1+ steps.
+        Falls back to single-command parse() for simple instructions.
+        """
+        if not transcript or not transcript.strip():
+            return None
+        text = transcript.strip().lower()
+
+        # --- Try compound templates first (highest priority) ---
+
+        # "take/bring the box from <A> to <B>"  →  nav(A) + grab + nav(B) + release
+        m = _TRANSPORT_PATTERN.match(text)
+        if m:
+            src_text, dst_text = m.group(1).strip(), m.group(2).strip()
+            # Strip trailing filler like "the" from destination
+            for filler in ("the ", "a "):
+                if src_text.startswith(filler):
+                    src_text = src_text[len(filler):]
+                if dst_text.startswith(filler):
+                    dst_text = dst_text[len(filler):]
+            src = _resolve_landmark(src_text)
+            dst = _resolve_landmark(dst_text)
+            if src and dst:
+                return CommandSequence(
+                    steps=[
+                        ParsedCommand(command_type="automated", action="NAVIGATE", target=src),
+                        ParsedCommand(command_type="automated", action="GRAB"),
+                        ParsedCommand(command_type="automated", action="NAVIGATE", target=dst),
+                        ParsedCommand(command_type="automated", action="RELEASE"),
+                    ],
+                    raw_text=transcript,
+                    confidence=confidence,
+                )
+
+        # "pick up the box at <A> and bring it to <B>"
+        m = _PICKUP_DELIVER_PATTERN.match(text)
+        if m:
+            src_text, dst_text = m.group(1).strip(), m.group(2).strip()
+            for filler in ("the ", "a "):
+                if src_text.startswith(filler):
+                    src_text = src_text[len(filler):]
+                if dst_text.startswith(filler):
+                    dst_text = dst_text[len(filler):]
+            src = _resolve_landmark(src_text)
+            dst = _resolve_landmark(dst_text)
+            if src and dst:
+                return CommandSequence(
+                    steps=[
+                        ParsedCommand(command_type="automated", action="NAVIGATE", target=src),
+                        ParsedCommand(command_type="automated", action="GRAB"),
+                        ParsedCommand(command_type="automated", action="NAVIGATE", target=dst),
+                        ParsedCommand(command_type="automated", action="RELEASE"),
+                    ],
+                    raw_text=transcript,
+                    confidence=confidence,
+                )
+
+        # --- Try conjunction splitting: "go to X and grab the box" ---
+        parts = _CONJUNCTIONS.split(text)
+        parts = [p.strip() for p in parts if p.strip()]
+
+        if len(parts) > 1:
+            steps = []
+            for part in parts:
+                cmd = self._parse_fragment(part)
+                if cmd:
+                    steps.append(cmd)
+            if steps:
+                return CommandSequence(
+                    steps=steps, raw_text=transcript, confidence=confidence,
+                )
+
+        # --- Fallback: single command wrapped as a 1-step sequence ---
+        single = self.parse(transcript, confidence)
+        if single:
+            return CommandSequence(
+                steps=[single], raw_text=transcript, confidence=confidence,
+            )
+
+        return None
+
+    def _parse_fragment(self, text: str) -> ParsedCommand | None:
+        """Parse a single fragment from a split compound sentence."""
+        text = text.strip()
+        # Strip leading filler
+        for filler in ("then ", "also ", "please "):
+            if text.startswith(filler):
+                text = text[len(filler):]
+
+        # Navigation fragment: "go to shelf A"
+        cmd = self._match_navigation(text)
+        if cmd:
+            return cmd
+
+        # Post-nav action fragment: "grab the box", "release it", "pick up the object"
+        for keyword, action in _POST_NAV_ACTIONS.items():
+            if keyword in text:
+                return ParsedCommand(command_type="automated", action=action)
+
+        # Direct command fragment: "stop", "move forward"
+        cmd = self._match_direct(text)
+        if cmd:
+            return cmd
+
+        # Try to find just a landmark name (implicit navigate)
+        landmark = _resolve_landmark(text)
+        if landmark:
+            return ParsedCommand(command_type="automated", action="NAVIGATE", target=landmark)
+
+        return None
 
     def parse(self, transcript: str, confidence: float = 1.0) -> ParsedCommand | None:
         """

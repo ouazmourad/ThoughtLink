@@ -14,7 +14,7 @@ from .eeg_source import EEGReplaySource, TestEEGSource
 from .autopilot import Autopilot
 from .robot_manager import RobotManager
 from .gesture import GestureType
-from voice.command_parser import CommandParser
+from voice.command_parser import CommandParser, CommandSequence
 from .config import (
     EEG_DATA_DIR,
     TICK_INTERVAL,
@@ -87,6 +87,12 @@ class ControlLoop:
         self._voice_queue: list[dict] = []
         self._voice_lock = asyncio.Lock()
 
+        # Action queue for multi-step voice commands (e.g. "go to shelf A and grab")
+        self._action_queue: list[dict] = []
+        self._action_queue_label: str = ""       # human-readable description
+        self._action_queue_total: int = 0        # total steps in current sequence
+        self._waiting_for_arrival: bool = False   # True while autopilot is navigating
+
         # Per-robot autopilots
         self._autopilots: dict[str, Autopilot] = {}
 
@@ -125,16 +131,57 @@ class ControlLoop:
         print("[ControlLoop] Stopped")
 
     async def push_voice_command(self, transcript: str, confidence: float = 1.0):
-        """Queue a voice transcript for processing on next tick."""
-        parsed = self._voice_parser.parse(transcript, confidence)
-        if parsed:
-            action = _VOICE_ACTION_MAP.get(parsed.action, parsed.action)
+        """Queue a voice transcript for processing on next tick.
+
+        Multi-step commands (e.g. "go to shelf A and grab the box") are
+        parsed into a CommandSequence and fed into the action queue so
+        steps execute one after another.
+        """
+        seq = self._voice_parser.parse_sequence(transcript, confidence)
+        if not seq:
+            return
+
+        if len(seq.steps) > 1:
+            # Multi-step: load the action queue
+            await self._load_action_queue(seq)
+        else:
+            # Single step: use the existing voice queue for backward compat
+            cmd = seq.steps[0]
+            action = _VOICE_ACTION_MAP.get(cmd.action, cmd.action)
             async with self._voice_lock:
                 self._voice_queue.append({
-                    "command_type": parsed.command_type,
+                    "command_type": cmd.command_type,
                     "action": action,
-                    "raw_text": parsed.raw_text,
+                    "raw_text": seq.raw_text,
+                    "target": cmd.target,
                 })
+
+    async def _load_action_queue(self, seq: CommandSequence):
+        """Load a multi-step command sequence into the action queue."""
+        self._action_queue.clear()
+        self._waiting_for_arrival = False
+        self._action_queue_label = seq.raw_text
+        steps = []
+        for cmd in seq.steps:
+            action = _VOICE_ACTION_MAP.get(cmd.action, cmd.action)
+            steps.append({
+                "action": action,
+                "target": cmd.target,
+                "command_type": cmd.command_type,
+            })
+        self._action_queue = steps
+        self._action_queue_total = len(steps)
+
+        await self.broadcast({
+            "type": "command_log",
+            "source": "voice",
+            "action": f"SEQUENCE ({len(steps)} steps)",
+            "text": seq.raw_text,
+            "timestamp": time.time(),
+        })
+        print(f"[ControlLoop] Loaded {len(steps)}-step voice sequence: {seq.raw_text}")
+        # Kick off the first step immediately
+        await self._advance_action_queue()
 
     async def push_manual_command(self, action_str: str):
         """Inject a manual command — executes directly on selected robot."""
@@ -213,12 +260,69 @@ class ControlLoop:
             print(f"[ControlLoop] Navigation cancelled for {robot_id}")
         self._autopilots.pop(robot_id, None)
 
+    async def _advance_action_queue(self):
+        """Execute the next step in the action queue."""
+        if not self._action_queue:
+            self._waiting_for_arrival = False
+            self._action_queue_label = ""
+            return
+
+        step = self._action_queue[0]
+        action_str = step["action"]
+        target = step.get("target")
+        step_num = self._action_queue_total - len(self._action_queue) + 1
+
+        if action_str == "NAVIGATE" and target:
+            result = self.start_nav(target)
+            if result.get("ok"):
+                self._waiting_for_arrival = True
+                await self.broadcast({
+                    "type": "command_log",
+                    "source": "system",
+                    "action": f"SEQ {step_num}/{self._action_queue_total}: NAV -> {result['target']}",
+                    "timestamp": time.time(),
+                })
+            else:
+                # Skip bad nav target, advance to next
+                self._action_queue.pop(0)
+                await self._advance_action_queue()
+        elif action_str in ("GRAB", "RELEASE", "STOP"):
+            # Execute immediately, then advance
+            action_map = {
+                "GRAB": RobotAction.GRAB,
+                "RELEASE": RobotAction.RELEASE,
+                "STOP": RobotAction.STOP,
+            }
+            robot_action = action_map.get(action_str, RobotAction.IDLE)
+            selected = self.robot_manager.selected_robot
+            self.sim.execute(robot_action, selected.id)
+            self.robot_manager.selected_sm.state.current_action = robot_action
+            await self.broadcast({
+                "type": "command_log",
+                "source": "system",
+                "action": f"SEQ {step_num}/{self._action_queue_total}: {action_str}",
+                "timestamp": time.time(),
+            })
+            self._action_queue.pop(0)
+            # Small delay before next step so grab/release has time to take effect
+            if self._action_queue:
+                # Will be advanced on next tick check
+                self._waiting_for_arrival = False
+        else:
+            # Unknown action, skip
+            self._action_queue.pop(0)
+            await self._advance_action_queue()
+
     def full_reset(self):
         """Reset all subsystems to initial state."""
         self.robot_manager.reset()
         self.fusion = CommandFusion(self.robot_manager.selected_sm)
         self.sim.reset()
         self._voice_queue.clear()
+        self._action_queue.clear()
+        self._action_queue_label = ""
+        self._action_queue_total = 0
+        self._waiting_for_arrival = False
         self._autopilots.clear()
         if self.eeg_source:
             self.eeg_source.reset()
@@ -314,6 +418,15 @@ class ControlLoop:
                         "text": voice_command.get("raw_text", ""),
                         "timestamp": time.time(),
                     })
+                # Clear any pending action queue
+                if self._action_queue:
+                    self._action_queue.clear()
+                    self._waiting_for_arrival = False
+                    self._action_queue_label = ""
+
+        # 2c. Advance action queue for non-navigation steps (GRAB, RELEASE)
+        if self._action_queue and not self._waiting_for_arrival:
+            await self._advance_action_queue()
 
         # 3. Determine action: autopilot takes priority when active
         selected_autopilot = self._autopilots.get(selected.id)
@@ -331,6 +444,11 @@ class ControlLoop:
                     "action": f"ARRIVED at {selected_autopilot.target_name}",
                     "timestamp": time.time(),
                 })
+                # Advance the action queue if we were waiting for this arrival
+                if self._waiting_for_arrival and self._action_queue:
+                    self._action_queue.pop(0)  # remove completed NAVIGATE step
+                    self._waiting_for_arrival = False
+                    await self._advance_action_queue()
         else:
             # Normal fusion
             fused = self.fusion.update(brain_result, voice_command)
@@ -393,6 +511,14 @@ class ControlLoop:
             "selected_robot": selected.id,
             "robots": self.robot_manager.get_all_states(),
             "orchestration": selected_sm.get_orchestration_state(),
+            # Voice action queue progress
+            "action_queue": {
+                "active": bool(self._action_queue),
+                "label": self._action_queue_label,
+                "remaining": len(self._action_queue),
+                "total": self._action_queue_total,
+                "step": self._action_queue_total - len(self._action_queue),
+            } if self._action_queue_total > 0 else None,
         })
 
         # 6b. Broadcast autopilot navigation status
