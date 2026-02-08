@@ -11,6 +11,7 @@ from .state_machine import GearStateMachine, RobotAction
 from .command_fusion import CommandFusion
 from .sim_bridge import SimBridge
 from .eeg_source import EEGReplaySource, TestEEGSource
+from .autopilot import Autopilot
 from voice.command_parser import CommandParser
 from .config import (
     EEG_DATA_DIR,
@@ -76,6 +77,9 @@ class ControlLoop:
         # Voice command queue
         self._voice_queue: list[dict] = []
         self._voice_lock = asyncio.Lock()
+
+        # Autopilot (voice-commanded navigation)
+        self._autopilot: Autopilot | None = None
 
         # Metrics
         self.tick_count = 0
@@ -164,11 +168,33 @@ class ControlLoop:
         else:
             print("[ControlLoop] Brain sim OFF")
 
+    def start_nav(self, target_name: str) -> dict:
+        """Start autopilot navigation to a named waypoint."""
+        result = Autopilot.resolve_target(target_name)
+        if result is None:
+            print(f"[ControlLoop] Unknown nav target: {target_name}")
+            return {"ok": False, "error": f"Unknown landmark: {target_name}"}
+        canonical_name, (tx, ty) = result
+        self._autopilot = Autopilot(canonical_name, (tx, ty))
+        # Set gear to forward for walking
+        from .state_machine import Gear
+        self.state_machine.set_gear(Gear.FORWARD)
+        print(f"[ControlLoop] Navigating to {canonical_name} ({tx}, {ty})")
+        return {"ok": True, "target": canonical_name, "x": tx, "y": ty}
+
+    def cancel_nav(self):
+        """Cancel any active autopilot navigation."""
+        if self._autopilot and self._autopilot.active:
+            self._autopilot.cancel()
+            print("[ControlLoop] Navigation cancelled")
+        self._autopilot = None
+
     def full_reset(self):
         """Reset all subsystems to initial state."""
         self.state_machine.reset()
         self.sim.reset()
         self._voice_queue.clear()
+        self._autopilot = None
         if self.eeg_source:
             self.eeg_source.reset()
         if self._test_eeg_source:
@@ -229,11 +255,61 @@ class ControlLoop:
             elif self._voice_queue:
                 voice_command = self._voice_queue.pop(0)
 
-        # 3. Fuse commands
-        fused = self.fusion.update(brain_result, voice_command)
+        # 2b. Check if voice command starts/cancels navigation
+        nav_started = False
+        if voice_command:
+            action_str = voice_command.get("action", "")
+            if action_str == "NAVIGATE" and voice_command.get("command_type") == "automated":
+                target = voice_command.get("target", "")
+                result = self.start_nav(target)
+                nav_started = result.get("ok", False)
+                if nav_started:
+                    await self.broadcast({
+                        "type": "command_log",
+                        "source": "voice",
+                        "action": f"NAV → {result['target']}",
+                        "text": voice_command.get("raw_text", ""),
+                        "timestamp": time.time(),
+                    })
+                # Don't pass NAVIGATE to fusion — autopilot handles it
+                voice_command = None
+            elif action_str in ("CANCEL_NAV", "STOP", "EMERGENCY_STOP", "STOP_ALL"):
+                # Cancel active navigation on stop commands
+                if self._autopilot and self._autopilot.active:
+                    self.cancel_nav()
+                    await self.broadcast({
+                        "type": "command_log",
+                        "source": "voice",
+                        "action": "NAV CANCELLED",
+                        "text": voice_command.get("raw_text", ""),
+                        "timestamp": time.time(),
+                    })
+
+        # 3. Determine action: autopilot takes priority when active
+        if self._autopilot and self._autopilot.active:
+            # Read current robot position from sim
+            robot_state_now = self.sim.get_state()
+            pos = robot_state_now.get("position", [0, 0, 0])
+            yaw = robot_state_now.get("orientation", 0)
+            action = self._autopilot.update((pos[0], pos[1]), yaw)
+            action_source = "autopilot"
+
+            # Check if arrived
+            if self._autopilot.arrived:
+                await self.broadcast({
+                    "type": "command_log",
+                    "source": "system",
+                    "action": f"ARRIVED at {self._autopilot.target_name}",
+                    "timestamp": time.time(),
+                })
+        else:
+            # Normal fusion
+            fused = self.fusion.update(brain_result, voice_command)
+            action = fused["action"]
+            action_source = fused["source"]
 
         # 4. Execute in simulation
-        robot_state = self.sim.execute(fused["action"])
+        robot_state = self.sim.execute(action)
 
         # 5. Calculate latency
         latency_ms = (time.time() - tick_start) * 1000
@@ -245,8 +321,8 @@ class ControlLoop:
         await self.broadcast({
             "type": "state_update",
             "gear": self.state_machine.state.gear.value,
-            "action": fused["action"].value,
-            "action_source": fused["source"],
+            "action": action.value,
+            "action_source": action_source,
             "brain_class": brain_result.get("label") if brain_result else None,
             "brain_confidence": brain_result.get("confidence", 0) if brain_result else 0,
             "brain_gated": brain_result.get("gated", True) if brain_result else True,
@@ -255,6 +331,16 @@ class ControlLoop:
             "latency_ms": round(latency_ms, 1),
             "timestamp": time.time(),
         })
+
+        # 6b. Broadcast autopilot navigation status
+        if self._autopilot:
+            await self.broadcast({
+                "type": "nav_update",
+                **self._autopilot.get_status(),
+            })
+            # Clean up finished autopilot
+            if not self._autopilot.active:
+                self._autopilot = None
 
         # 7. Broadcast EEG visualization data (every 10th tick = 1Hz)
         if self.tick_count % 10 == 0 and eeg_window is not None:
@@ -268,18 +354,18 @@ class ControlLoop:
             except Exception:
                 pass
 
-        # 8. Log to command log
-        if fused["source"] in ("brain", "voice"):
+        # 8. Log to command log (only for normal fusion, not autopilot)
+        if action_source in ("brain", "voice"):
             log_entry = {
                 "type": "command_log",
-                "source": fused["source"],
-                "action": fused["action"].value,
+                "source": action_source,
+                "action": action.value,
                 "timestamp": time.time(),
             }
-            if fused["source"] == "brain" and brain_result:
+            if action_source == "brain" and brain_result:
                 log_entry["brain_class"] = brain_result.get("class")
                 log_entry["confidence"] = brain_result.get("confidence", 0)
-            if fused["source"] == "voice" and voice_command:
+            if action_source == "voice" and voice_command:
                 log_entry["text"] = voice_command.get("raw_text", "")
             await self.broadcast(log_entry)
 

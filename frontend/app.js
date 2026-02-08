@@ -119,6 +119,9 @@ function handleServerMessage(msg) {
             updateToggleButton('btn-brain', brainEnabled);
             updateToggleButton('btn-voice', voiceEnabled);
             break;
+        case 'nav_update':
+            handleNavUpdate(msg);
+            break;
         case 'sim_brain_update':
             simBrainClass = msg.class_index;
             updateSimBrainUI(simBrainClass);
@@ -249,10 +252,15 @@ function updateActionOverlay(action, source) {
     const el = document.getElementById('action-overlay');
     if (!el) return;
 
-    el.textContent = action || 'IDLE';
+    if (source === 'autopilot') {
+        el.textContent = 'NAV: ' + (action || 'IDLE');
+    } else {
+        el.textContent = action || 'IDLE';
+    }
 
     let cls = 'idle';
-    if (action === 'MOVE_FORWARD' || action === 'MOVE_BACKWARD') cls = 'moving';
+    if (source === 'autopilot') cls = 'navigating';
+    else if (action === 'MOVE_FORWARD' || action === 'MOVE_BACKWARD') cls = 'moving';
     else if (action === 'ROTATE_LEFT' || action === 'ROTATE_RIGHT') cls = 'rotating';
     else if (action === 'GRAB' || action === 'RELEASE') cls = 'grabbing';
     else if (action === 'STOP' || action === 'EMERGENCY_STOP') cls = 'stopped';
@@ -488,8 +496,72 @@ function handleVoiceTranscript(text, confidence) {
 }
 
 // ========================
+// Navigation
+// ========================
+
+function handleNavUpdate(msg) {
+    const overlay = document.getElementById('nav-overlay');
+    const targetEl = document.getElementById('nav-target');
+    const distEl = document.getElementById('nav-dist');
+
+    if (!overlay) return;
+
+    if (msg.active) {
+        overlay.style.display = 'flex';
+        if (targetEl) targetEl.textContent = 'NAV → ' + (msg.target_name || '?');
+        if (distEl) distEl.textContent = (msg.distance || 0).toFixed(1) + 'm';
+        // Pass target to robot view for marker drawing
+        if (robotView) {
+            robotView.navTarget = { x: msg.target_x, y: msg.target_y, name: msg.target_name };
+        }
+    } else {
+        overlay.style.display = 'none';
+        if (robotView) robotView.navTarget = null;
+        if (msg.arrived && msg.target_name) {
+            addLogEntry('system', 'ARRIVED', 'Arrived at ' + msg.target_name, Date.now() / 1000);
+        }
+    }
+}
+
+function cancelNav() {
+    wsSend({ type: 'cancel_nav' });
+}
+
+// ========================
 // Keyboard Controls
 // ========================
+
+// Reverse map: action → button text for highlight matching
+const ACTION_TO_BTN_TEXT = {
+    'MOVE_FORWARD': ['FWD', 'BOTH'],
+    'MOVE_BACKWARD': [],
+    'ROTATE_LEFT': ['ROT L', 'L.FIST'],
+    'ROTATE_RIGHT': ['ROT R', 'R.FIST'],
+    'STOP': ['STOP', 'RELAX'],
+    'GRAB': ['GRAB'],
+    'RELEASE': ['REL'],
+    'SHIFT_GEAR': ['SHIFT', 'TONGUE'],
+    'BOTH_FISTS': ['BOTH'],
+};
+
+function highlightButton(action, active) {
+    var grid = document.getElementById('manual-controls-grid');
+    if (!grid) return;
+    var labels = ACTION_TO_BTN_TEXT[action] || [];
+    var buttons = grid.querySelectorAll('.ctrl-btn');
+    for (var i = 0; i < buttons.length; i++) {
+        var btnText = buttons[i].childNodes[0];
+        if (!btnText) continue;
+        var text = (btnText.textContent || '').trim();
+        if (labels.indexOf(text) >= 0) {
+            if (active) {
+                buttons[i].classList.add('key-active');
+            } else {
+                buttons[i].classList.remove('key-active');
+            }
+        }
+    }
+}
 
 const KEY_MAP_DIRECT = {
     'w': 'MOVE_FORWARD',
@@ -542,7 +614,17 @@ document.addEventListener('keydown', (e) => {
 
     if (e.key in keyMap) {
         e.preventDefault();
-        sendCommand(keyMap[e.key]);
+        var action = keyMap[e.key];
+        sendCommand(action);
+        highlightButton(action, true);
+    }
+});
+
+document.addEventListener('keyup', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    var keyMap = controlMode === 'bci' ? KEY_MAP_BCI : KEY_MAP_DIRECT;
+    if (e.key in keyMap) {
+        highlightButton(keyMap[e.key], false);
     }
 });
 

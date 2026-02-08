@@ -94,6 +94,14 @@ class SimBridge:
             except Exception as e:
                 print(f"[SimBridge] Error sending action: {e}")
 
+            # Sync position from MuJoCo simulation
+            try:
+                robot_xy, yaw = self.bridge.get_robot_state()
+                self.robot_state["position"] = [float(robot_xy[0]), float(robot_xy[1]), 0]
+                self.robot_state["orientation"] = float(yaw)
+            except Exception:
+                pass
+
         self.robot_state["status"] = action.value.lower()
         return self.robot_state
 
@@ -107,6 +115,13 @@ class SimBridge:
         self.running = False
 
     def get_state(self) -> dict:
+        if self.bridge and SIM_AVAILABLE:
+            try:
+                robot_xy, yaw = self.bridge.get_robot_state()
+                self.robot_state["position"] = [float(robot_xy[0]), float(robot_xy[1]), 0]
+                self.robot_state["orientation"] = float(yaw)
+            except Exception:
+                pass
         return self.robot_state
 
     def is_running(self) -> bool:

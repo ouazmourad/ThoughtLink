@@ -516,6 +516,65 @@ body {
     color: var(--accent-red);
 }
 
+.action-overlay.navigating {
+    border-color: var(--accent-purple);
+    color: var(--accent-purple);
+}
+
+/* Navigation Overlay */
+.nav-overlay {
+    position: absolute;
+    top: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(168, 85, 247, 0.15);
+    border: 1px solid var(--accent-purple);
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 10;
+    backdrop-filter: blur(4px);
+}
+
+.nav-target {
+    color: var(--accent-purple);
+    font-weight: 700;
+}
+
+.nav-dist {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+.nav-cancel-btn {
+    padding: 3px 10px;
+    border: 1px solid var(--accent-red);
+    border-radius: 10px;
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--accent-red);
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.nav-cancel-btn:hover {
+    background: rgba(239, 68, 68, 0.3);
+}
+
+/* Keyboard press highlight for manual controls */
+.ctrl-btn.key-active {
+    background: rgba(59, 130, 246, 0.25);
+    border-color: var(--accent-blue);
+    color: var(--text-primary);
+    transform: scale(0.95);
+}
+
 /* EEG Chart */
 .eeg-panel {
     grid-column: 2;

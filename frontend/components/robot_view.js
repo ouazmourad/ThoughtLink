@@ -10,6 +10,7 @@ function RobotView(canvasId) {
     if (!this.canvas) { console.error("[RobotView] Canvas not found:", canvasId); return; }
     this.ctx = this.canvas.getContext("2d");
     this.robot = { x: 0, y: 0, angle: 0, trail: [] };
+    this.navTarget = null; // { x, y, name } set by app.js from nav_update
     this.viewRange = 5;
     this.minViewRange = 2;
     this.maxViewRange = 12;
@@ -134,15 +135,24 @@ RobotView.prototype.reset = function() {
 };
 
 RobotView.prototype.updateState = function(robotState, action) {
-    if (!action || action === "IDLE") return;
-    var s = 0.06, r = 0.06;
-    if (action === "MOVE_FORWARD") { this.robot.x += Math.cos(this.robot.angle)*s; this.robot.y += Math.sin(this.robot.angle)*s; }
-    if (action === "MOVE_BACKWARD") { this.robot.x -= Math.cos(this.robot.angle)*s; this.robot.y -= Math.sin(this.robot.angle)*s; }
-    if (action === "ROTATE_LEFT") this.robot.angle += r;
-    if (action === "ROTATE_RIGHT") this.robot.angle -= r;
-    var mx = this.floorSize[0]-0.5, my = this.floorSize[1]-0.5;
-    this.robot.x = Math.max(-mx, Math.min(mx, this.robot.x));
-    this.robot.y = Math.max(-my, Math.min(my, this.robot.y));
+    // Use real sim position if available (non-zero position means sim is running)
+    if (robotState && robotState.position &&
+        (robotState.position[0] !== 0 || robotState.position[1] !== 0 || robotState.orientation !== 0)) {
+        this.robot.x = robotState.position[0];
+        this.robot.y = robotState.position[1];
+        this.robot.angle = robotState.orientation || 0;
+    } else {
+        // Fallback: dead-reckoning for stub mode (no sim)
+        if (!action || action === "IDLE") return;
+        var s = 0.06, r = 0.06;
+        if (action === "MOVE_FORWARD") { this.robot.x += Math.cos(this.robot.angle)*s; this.robot.y += Math.sin(this.robot.angle)*s; }
+        if (action === "MOVE_BACKWARD") { this.robot.x -= Math.cos(this.robot.angle)*s; this.robot.y -= Math.sin(this.robot.angle)*s; }
+        if (action === "ROTATE_LEFT") this.robot.angle += r;
+        if (action === "ROTATE_RIGHT") this.robot.angle -= r;
+        var mx = this.floorSize[0]-0.5, my = this.floorSize[1]-0.5;
+        this.robot.x = Math.max(-mx, Math.min(mx, this.robot.x));
+        this.robot.y = Math.max(-my, Math.min(my, this.robot.y));
+    }
     this.robot.trail.push({ x: this.robot.x, y: this.robot.y });
     if (this.robot.trail.length > 500) this.robot.trail.shift();
 };
@@ -177,6 +187,8 @@ RobotView.prototype._drawFrame = function() {
         for (var k=0; k<this.robot.trail.length; k++) { var pt=toC(this.robot.trail[k].x,this.robot.trail[k].y); k===0?ctx.moveTo(pt.x,pt.y):ctx.lineTo(pt.x,pt.y); }
         ctx.stroke();
     }
+    // Draw navigation target if active
+    if (this.navTarget) this._drawNavTarget(ctx, scale, toC);
     this._drawRobot(ctx,scale,toC); this._drawHUD(ctx,w,h,scale);
     if (this.mapLoaded) this._drawLegend(ctx,w,h);
 };
@@ -249,6 +261,55 @@ RobotView.prototype._drawLegend = function(ctx,w,h) {
     var cats=["wall","pillar","shelf","conveyor","table","pallet","bollard","box","lane"];
     ctx.font="11px JetBrains Mono, monospace"; ctx.textAlign="left";
     for(var i=0;i<cats.length;i++) { var c=cats[i]; if(!this.legendCategories[c]) continue; ctx.fillStyle=this.legendCategories[c]; ctx.beginPath(); ctx.arc(14,y+5,5,0,Math.PI*2); ctx.fill(); ctx.fillStyle="#94a3b8"; ctx.fillText(names[c]||c,26,y+9); y+=18; }
+};
+
+RobotView.prototype._drawNavTarget = function(ctx, scale, toC) {
+    var t = this.navTarget;
+    var tp = toC(t.x, t.y);
+    var rp = toC(this.robot.x, this.robot.y);
+    var R = Math.max(10, scale * 0.35);
+    var time = Date.now() / 1000;
+    var pulse = 0.7 + 0.3 * Math.sin(time * 3);
+
+    // Dashed line from robot to target
+    ctx.save();
+    ctx.strokeStyle = "rgba(168, 85, 247, 0.35)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([scale * 0.15, scale * 0.1]);
+    ctx.beginPath();
+    ctx.moveTo(rp.x, rp.y);
+    ctx.lineTo(tp.x, tp.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Pulsing target ring
+    ctx.strokeStyle = "rgba(168, 85, 247, " + (pulse * 0.6) + ")";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(tp.x, tp.y, R * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Inner dot
+    ctx.fillStyle = "rgba(168, 85, 247, 0.7)";
+    ctx.beginPath();
+    ctx.arc(tp.x, tp.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Crosshair
+    ctx.strokeStyle = "rgba(168, 85, 247, 0.4)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(tp.x - R, tp.y); ctx.lineTo(tp.x + R, tp.y);
+    ctx.moveTo(tp.x, tp.y - R); ctx.lineTo(tp.x, tp.y + R);
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle = "#a855f7";
+    ctx.font = Math.max(10, scale * 0.25) + "px JetBrains Mono, monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(t.name || "TARGET", tp.x, tp.y - R - 6);
+
+    ctx.restore();
 };
 
 RobotView.prototype._lighten = function(hex,a) { var c=this._hex2rgb(hex); return "rgb("+Math.min(255,c.r+a*255)+","+Math.min(255,c.g+a*255)+","+Math.min(255,c.b+a*255)+")"; };

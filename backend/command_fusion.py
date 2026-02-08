@@ -78,7 +78,12 @@ class CommandFusion:
         }
 
     def _handle_voice_command(self, cmd: dict) -> RobotAction | None:
-        """Convert a parsed voice command to a robot action."""
+        """Convert a parsed voice command to a robot action.
+
+        Returns RobotAction for direct commands.
+        For NAVIGATE commands, returns None (handled by control_loop autopilot).
+        For CANCEL_NAV, returns STOP and signals cancellation.
+        """
         command_type = cmd.get("command_type", "")
         action_str = cmd.get("action", "")
 
@@ -106,7 +111,15 @@ class CommandFusion:
             elif action_str == "SET_GEAR_NEUTRAL":
                 self.sm.set_gear(Gear.NEUTRAL)
                 return RobotAction.IDLE
+            elif action_str == "CANCEL_NAV":
+                # Signal cancellation — control_loop checks for this
+                return RobotAction.STOP
 
             return action_map.get(action_str)
+
+        # Automated NAVIGATE commands are handled by the control loop's autopilot,
+        # not here. Return None so fusion doesn't emit an action.
+        if command_type == "automated" and action_str == "NAVIGATE":
+            return None
 
         return None

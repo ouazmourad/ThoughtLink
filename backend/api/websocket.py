@@ -171,6 +171,18 @@ async def _handle_client_message(message: dict, websocket: WebSocket):
             "timestamp": time.time(),
         })
 
+    elif msg_type == "cancel_nav":
+        _control_loop.cancel_nav()
+        await broadcast({
+            "type": "nav_update",
+            "active": False,
+            "target_name": None,
+            "target_x": 0,
+            "target_y": 0,
+            "distance": 0,
+            "arrived": False,
+        })
+
     elif msg_type == "set_gear":
         from backend.state_machine import Gear
         gear_str = message.get("gear", "NEUTRAL")
