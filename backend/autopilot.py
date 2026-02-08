@@ -32,10 +32,22 @@ _LANDMARK_ALIASES = {
     "pallet one": "Pallet 1",
     "source pallet": "Pallet 1",
     "first pallet": "Pallet 1",
+    "palette 1": "Pallet 1",
+    "palette one": "Pallet 1",
     "pallet 2": "Pallet 2",
     "pallet two": "Pallet 2",
     "destination pallet": "Pallet 2",
     "second pallet": "Pallet 2",
+    "palette 2": "Pallet 2",
+    "palette two": "Pallet 2",
+    "pallet": "Pallet 2",
+    "palette": "Pallet 2",
+    "the pallet": "Pallet 2",
+    "the palette": "Pallet 2",
+    "pallet to": "Pallet 2",
+    "palette to": "Pallet 2",
+    "shelf to": "Shelf B",
+    "shelve to": "Shelf B",
 }
 
 
