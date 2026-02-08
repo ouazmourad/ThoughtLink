@@ -17,6 +17,9 @@ let voiceManager = null;
 // --- State ---
 let currentGear = 'NEUTRAL';
 let currentAction = 'IDLE';
+let brainEnabled = true;
+let voiceEnabled = true;
+let testModeActive = false;
 
 // ========================
 // WebSocket Connection
@@ -103,6 +106,21 @@ function handleServerMessage(msg) {
             break;
         case 'tts_request':
             handleTTSRequest(msg);
+            break;
+        case 'test_mode_update':
+            testModeActive = msg.enabled;
+            updateToggleButton('btn-test-mode', testModeActive);
+            break;
+        case 'input_toggle_update':
+            brainEnabled = msg.brain_enabled;
+            voiceEnabled = msg.voice_enabled;
+            updateToggleButton('btn-brain', brainEnabled);
+            updateToggleButton('btn-voice', voiceEnabled);
+            break;
+        case 'full_reset_ack':
+            if (robotView) robotView.reset();
+            tickCount = 0;
+            addLogEntry('system', 'FULL_RESET', 'Full system reset', Date.now() / 1000);
             break;
         default:
             break;
@@ -299,6 +317,47 @@ function sendReset() {
 }
 
 // ========================
+// Debug Controls
+// ========================
+
+function toggleBrain() {
+    wsSend({ type: 'toggle_brain' });
+}
+
+function toggleVoice() {
+    voiceEnabled = !voiceEnabled;
+    if (!voiceEnabled && voiceManager) {
+        voiceManager.stop();
+    }
+    wsSend({ type: 'toggle_voice' });
+}
+
+function toggleTestMode() {
+    wsSend({ type: 'toggle_test_mode' });
+}
+
+function sendFullReset() {
+    wsSend({ type: 'full_reset' });
+    if (robotView) robotView.reset();
+    // Clear command log
+    var log = document.getElementById('command-log');
+    if (log) { log.innerHTML = ''; logEntryCount = 0; }
+    tickCount = 0;
+}
+
+function updateToggleButton(btnId, active) {
+    var btn = document.getElementById(btnId);
+    if (!btn) return;
+    if (active) {
+        btn.classList.add('active-toggle');
+    } else {
+        btn.classList.remove('active-toggle');
+    }
+    var hint = btn.querySelector('.key-hint');
+    if (hint) hint.textContent = active ? 'On' : 'Off';
+}
+
+// ========================
 // Voice
 // ========================
 
@@ -328,7 +387,8 @@ function handleVoiceTranscript(text, confidence) {
         }
     }
 
-    // Send to backend
+    // Send to backend only if voice is enabled
+    if (!voiceEnabled) return;
     wsSend({
         type: 'voice_transcript',
         text: text,

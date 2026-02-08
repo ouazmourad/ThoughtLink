@@ -79,6 +79,10 @@ class SimBridge:
             self.bridge = None
             self.running = True
 
+    def reset(self):
+        self.last_action = RobotAction.IDLE
+        self.robot_state = {"position": [0, 0, 0], "orientation": 0, "status": "idle"}
+
     def execute(self, action: RobotAction) -> dict:
         """Send action to simulation, return robot state."""
         self.last_action = action

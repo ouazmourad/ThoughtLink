@@ -9,8 +9,10 @@ function RobotView(canvasId) {
     this.canvas = document.getElementById(canvasId);
     if (!this.canvas) { console.error("[RobotView] Canvas not found:", canvasId); return; }
     this.ctx = this.canvas.getContext("2d");
-    this.robot = { x: 0, y: 0, angle: Math.PI / 2, trail: [] };
-    this.viewRange = 8;
+    this.robot = { x: 0, y: 0, angle: 0, trail: [] };
+    this.viewRange = 5;
+    this.minViewRange = 2;
+    this.maxViewRange = 12;
     this.followRobot = true;
     this.mapObjects = [];
     this.materials = {};
@@ -20,6 +22,11 @@ function RobotView(canvasId) {
     this._resize();
     var self = this;
     window.addEventListener("resize", function() { self._resize(); });
+    this.canvas.addEventListener("wheel", function(e) {
+        e.preventDefault();
+        var delta = e.deltaY > 0 ? 0.5 : -0.5;
+        self.viewRange = Math.max(self.minViewRange, Math.min(self.maxViewRange, self.viewRange + delta));
+    }, { passive: false });
     this._parseSceneXML(EMBEDDED_SCENE_XML);
     this.mapLoaded = true;
     console.log("[RobotView] Map loaded from embedded XML:", this.mapObjects.length, "objects");
@@ -119,6 +126,13 @@ RobotView.prototype._buildLegend = function() {
     }
 };
 
+RobotView.prototype.reset = function() {
+    this.robot.x = 0;
+    this.robot.y = 0;
+    this.robot.angle = 0;
+    this.robot.trail = [];
+};
+
 RobotView.prototype.updateState = function(robotState, action) {
     if (!action || action === "IDLE") return;
     var s = 0.06, r = 0.06;
@@ -198,7 +212,7 @@ RobotView.prototype._drawObj = function(ctx, obj, scale, toC) {
 };
 
 RobotView.prototype._label = function(ctx,pos,text,color,scale) {
-    ctx.fillStyle=color; ctx.font=Math.max(7,scale*0.18)+"px JetBrains Mono, monospace"; ctx.textAlign="center"; ctx.fillText(text,pos.x,pos.y+4);
+    ctx.fillStyle=color; ctx.font=Math.max(9,scale*0.22)+"px JetBrains Mono, monospace"; ctx.textAlign="center"; ctx.fillText(text,pos.x,pos.y+4);
 };
 
 RobotView.prototype._drawRobot = function(ctx,scale,toC) {
@@ -226,15 +240,15 @@ RobotView.prototype._drawHUD = function(ctx,w,h,scale) {
     ctx.fillStyle=tc; ctx.font="8px JetBrains Mono"; ctx.textAlign="center"; ctx.fillText("N",compX,compY-compR-4);
     var hx=compX+Math.cos(this.robot.angle)*(compR-5), hy=compY-Math.sin(this.robot.angle)*(compR-5);
     ctx.fillStyle="#3b82f6"; ctx.beginPath(); ctx.arc(hx,hy,2.5,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle="rgba(100,116,139,0.5)"; ctx.font="9px JetBrains Mono, monospace"; ctx.textAlign="left";
-    ctx.fillText("FACTORY FLOOR - "+this.mapObjects.length+" objects from scene XML", 8, 14);
+    ctx.fillStyle="rgba(100,116,139,0.5)"; ctx.font="11px JetBrains Mono, monospace"; ctx.textAlign="left";
+    ctx.fillText("FACTORY FLOOR - "+this.mapObjects.length+" objects from scene XML", 8, 16);
 };
 
 RobotView.prototype._drawLegend = function(ctx,w,h) {
-    var y=26, names={wall:"Wall",pillar:"Pillar",shelf:"Shelf",conveyor:"Conveyor",table:"Table",pallet:"Pallet",bollard:"Bollard",box:"Box/Cargo",lane:"Lane"};
+    var y=28, names={wall:"Wall",pillar:"Pillar",shelf:"Shelf",conveyor:"Conveyor",table:"Table",pallet:"Pallet",bollard:"Bollard",box:"Box/Cargo",lane:"Lane"};
     var cats=["wall","pillar","shelf","conveyor","table","pallet","bollard","box","lane"];
-    ctx.font="8px JetBrains Mono, monospace"; ctx.textAlign="left";
-    for(var i=0;i<cats.length;i++) { var c=cats[i]; if(!this.legendCategories[c]) continue; ctx.fillStyle=this.legendCategories[c]; ctx.beginPath(); ctx.arc(12,y+4,4,0,Math.PI*2); ctx.fill(); ctx.fillStyle="#94a3b8"; ctx.fillText(names[c]||c,22,y+7); y+=14; }
+    ctx.font="11px JetBrains Mono, monospace"; ctx.textAlign="left";
+    for(var i=0;i<cats.length;i++) { var c=cats[i]; if(!this.legendCategories[c]) continue; ctx.fillStyle=this.legendCategories[c]; ctx.beginPath(); ctx.arc(14,y+5,5,0,Math.PI*2); ctx.fill(); ctx.fillStyle="#94a3b8"; ctx.fillText(names[c]||c,26,y+9); y+=18; }
 };
 
 RobotView.prototype._lighten = function(hex,a) { var c=this._hex2rgb(hex); return "rgb("+Math.min(255,c.r+a*255)+","+Math.min(255,c.g+a*255)+","+Math.min(255,c.b+a*255)+")"; };

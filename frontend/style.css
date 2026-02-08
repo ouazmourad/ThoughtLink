@@ -286,6 +286,20 @@ body {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    overflow-y: auto;
+}
+
+.left-bottom::-webkit-scrollbar {
+    width: 4px;
+}
+
+.left-bottom::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.left-bottom::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
 }
 
 /* Metrics Panel */
@@ -351,6 +365,18 @@ body {
 .ctrl-btn.accent {
     border-color: var(--accent-cyan);
     color: var(--accent-cyan);
+}
+
+.ctrl-btn.active-toggle {
+    background: rgba(6, 182, 212, 0.15);
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+}
+
+.debug-controls {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
 }
 
 .ctrl-btn .key-hint {
@@ -604,6 +630,25 @@ body {
     .dashboard {
         grid-template-columns: 250px 1fr 280px;
     }
+    .gear-display {
+        gap: 8px;
+        margin: 4px 0;
+    }
+    .gear-label {
+        width: 48px;
+        height: 48px;
+        font-size: 1.3rem;
+        border-radius: 10px;
+    }
+    .gear-text {
+        font-size: 0.9rem;
+    }
+    .gear-panel {
+        gap: 10px;
+    }
+    .brain-class {
+        font-size: 1.1rem;
+    }
 }
 
 @media (max-width: 900px) {
@@ -614,4 +659,30 @@ body {
         height: auto;
     }
     body { overflow: auto; }
+    .gear-display {
+        gap: 8px;
+        margin: 4px 0;
+    }
+    .gear-label {
+        width: 44px;
+        height: 44px;
+        font-size: 1.1rem;
+        border-radius: 8px;
+    }
+    .gear-text {
+        font-size: 0.85rem;
+    }
+    .gear-panel {
+        gap: 8px;
+    }
+    .brain-class {
+        font-size: 1rem;
+    }
+    .holding-indicator {
+        padding: 8px;
+    }
+    .holding-icon {
+        font-size: 1.2rem;
+        width: 28px;
+    }
 }

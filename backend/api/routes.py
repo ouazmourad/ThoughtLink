@@ -1,84 +1,95 @@
-"""
-REST API routes for ThoughtLink.
-"""
+"""REST API routes for ThoughtLink."""
+
+import socket
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
-from backend.services.voice_service import voice_service
-from backend.services.simulation_service import simulation_service
+from ..config import PORT
+from ..state_machine import Gear
+from ..scene_parser import get_default_map
 
 router = APIRouter()
 
+# Module-level reference to ControlLoop — set by server.py during setup
+_control_loop = None
 
-@router.get("/status")
+# Module-level reference to connected_clients list
+_connected_clients = None
+
+
+def set_control_loop(loop) -> None:
+    """Called once at startup to wire the control loop into the route handlers."""
+    global _control_loop
+    _control_loop = loop
+
+
+def set_connected_clients(clients) -> None:
+    """Called once at startup to give routes access to the client list."""
+    global _connected_clients
+    _connected_clients = clients
+
+
+@router.get("/api/status")
 async def get_status():
-    """System status: simulation running, voice enabled, etc."""
-    return {
-        "simulation": {
-            "running": simulation_service.is_running(),
-            "action_log_size": len(simulation_service.get_action_log()),
-        },
-        "voice": {
-            "tts_enabled": voice_service.tts.api_key != "",
-            "pending_commands": voice_service.listener.command_queue.qsize(),
-        },
-    }
+    return JSONResponse({
+        "state": _control_loop.state_machine.get_state_snapshot(),
+        "sim_running": _control_loop.sim.is_running(),
+        "clients_connected": len(_connected_clients),
+        "tick_count": _control_loop.tick_count,
+    })
 
 
-@router.get("/action-log")
-async def get_action_log():
-    """Get the simulation action log."""
-    return {"log": simulation_service.get_action_log()}
+@router.post("/api/reset")
+async def reset_state():
+    _control_loop.state_machine.reset()
+    return JSONResponse({"status": "ok", "message": "State machine reset"})
 
 
-@router.delete("/action-log")
-async def clear_action_log():
-    """Clear the simulation action log."""
-    simulation_service.clear_log()
-    return {"status": "cleared"}
+@router.post("/api/full-reset")
+async def full_reset():
+    _control_loop.full_reset()
+    return JSONResponse({"status": "ok", "message": "Full system reset"})
 
 
-@router.get("/voice/transcript-log")
-async def get_transcript_log():
-    """Get all received voice transcripts."""
-    return {"log": voice_service.listener.get_transcript_log()}
+@router.post("/api/set-gear/{gear}")
+async def set_gear(gear: str):
+    try:
+        g = Gear(gear.upper())
+        _control_loop.state_machine.set_gear(g)
+        return JSONResponse({"status": "ok", "gear": g.value})
+    except ValueError:
+        return JSONResponse({"status": "error", "message": f"Invalid gear: {gear}"}, status_code=400)
 
 
-@router.get("/voice/feedback-log")
-async def get_feedback_log():
-    """Get all TTS feedback events."""
-    return {"log": voice_service.tts.get_feedback_log()}
+@router.get("/api/metrics")
+async def get_metrics():
+    return JSONResponse(_control_loop.get_metrics())
 
 
-@router.post("/voice/command")
-async def send_voice_command(body: dict):
-    """
-    Manually send a voice command (for testing without microphone).
-    Body: {"text": "stop", "confidence": 1.0}
-    """
-    text = body.get("text", "")
-    confidence = body.get("confidence", 1.0)
-
-    parsed = voice_service.process_transcript(text, confidence)
-    if parsed:
-        if parsed.command_type == "direct_override":
-            simulation_service.send_action(parsed.action)
-        return {
-            "parsed": True,
-            "action": parsed.action,
-            "command_type": parsed.command_type,
-            "robot_id": parsed.robot_id,
-            "target": parsed.target,
-        }
-    return {"parsed": False, "message": "Unrecognized command"}
+def _get_local_ip() -> str:
+    """Get the local network IP address of this machine."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return socket.gethostbyname(socket.gethostname())
 
 
-@router.post("/simulation/action")
-async def send_simulation_action(body: dict):
-    """
-    Send a direct action to the simulation.
-    Body: {"action": "FORWARD"}
-    """
-    action = body.get("action", "STOP")
-    simulation_service.send_action(action)
-    return {"status": "sent", "action": action}
+@router.get("/api/server-info")
+async def get_server_info():
+    return JSONResponse({
+        "version": "0.1",
+        "host": _get_local_ip(),
+        "port": PORT,
+        "clients_connected": len(_connected_clients),
+    })
+
+
+@router.get("/api/map")
+async def get_map():
+    """Return parsed 2D map data from the MuJoCo scene XML."""
+    return JSONResponse(get_default_map())

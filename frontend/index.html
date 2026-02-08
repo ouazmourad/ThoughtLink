@@ -101,6 +101,14 @@
                 <div class="ctrl-btn" onclick="sendCommand('BOTH_FISTS')">BOTH<span class="key-hint">Space</span></div>
                 <div class="ctrl-btn" onclick="sendReset()">RESET<span class="key-hint">R</span></div>
             </div>
+
+            <div class="card-header" style="margin-top: 12px;">Debug</div>
+            <div class="debug-controls">
+                <button class="ctrl-btn active-toggle" id="btn-brain" onclick="toggleBrain()">BRAIN<span class="key-hint">On</span></button>
+                <button class="ctrl-btn active-toggle" id="btn-voice" onclick="toggleVoice()">VOICE<span class="key-hint">On</span></button>
+                <button class="ctrl-btn" id="btn-test-mode" onclick="toggleTestMode()">TEST EEG<span class="key-hint">Off</span></button>
+                <button class="ctrl-btn accent" onclick="sendFullReset()">FULL RESET</button>
+            </div>
         </div>
 
         <!-- CENTER BOTTOM: EEG Waveform -->

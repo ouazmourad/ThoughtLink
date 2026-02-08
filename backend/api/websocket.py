@@ -1,137 +1,172 @@
-"""
-WebSocket endpoint for real-time communication.
-Handles: voice transcripts (STT), TTS audio delivery, EEG state updates.
-"""
+"""WebSocket endpoint — connection management + real-time protocol."""
 
 from __future__ import annotations
 
 import json
-import logging
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from backend.services.voice_service import voice_service
-from backend.services.simulation_service import simulation_service
-
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connected WebSocket clients
-_clients: set[WebSocket] = set()
+connected_clients: list[WebSocket] = []
+
+# Module-level reference to ControlLoop — set by server.py during setup
+_control_loop = None
+
+
+def set_control_loop(loop) -> None:
+    """Called once at startup to wire the control loop into the WS handler."""
+    global _control_loop
+    _control_loop = loop
 
 
 async def broadcast(message: dict) -> None:
-    """Send a message to all connected WebSocket clients."""
-    dead: list[WebSocket] = []
-    data = json.dumps(message)
-    for ws in _clients:
+    """Send a message to all connected frontend clients."""
+    text = json.dumps(message, default=str)
+    disconnected = []
+    for client in connected_clients:
         try:
-            await ws.send_text(data)
+            await client.send_text(text)
         except Exception:
-            dead.append(ws)
-    for ws in dead:
-        _clients.discard(ws)
+            disconnected.append(client)
+    for client in disconnected:
+        if client in connected_clients:
+            connected_clients.remove(client)
 
 
 @router.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    _clients.add(ws)
-    logger.info(f"WebSocket client connected. Total: {len(_clients)}")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    connected_clients.append(websocket)
+    print(f"[Server] Client connected ({len(connected_clients)} total)")
+
+    # Send initial state
+    await websocket.send_text(json.dumps({
+        "type": "state_update",
+        "gear": _control_loop.state_machine.state.gear.value,
+        "action": "IDLE",
+        "action_source": "idle",
+        "brain_class": None,
+        "brain_confidence": 0,
+        "brain_gated": True,
+        "holding_item": _control_loop.state_machine.state.holding_item,
+        "robot_state": _control_loop.sim.get_state(),
+        "latency_ms": 0,
+        "timestamp": time.time(),
+    }))
 
     try:
         while True:
-            data = await ws.receive_text()
-            msg = json.loads(data)
-            msg_type = msg.get("type", "")
-
-            if msg_type == "voice_transcript":
-                await _handle_voice_transcript(ws, msg)
-            elif msg_type == "action":
-                await _handle_action(ws, msg)
-            elif msg_type == "ping":
-                await ws.send_text(json.dumps({"type": "pong", "timestamp": time.time()}))
-            else:
-                await ws.send_text(json.dumps({
-                    "type": "error",
-                    "message": f"Unknown message type: {msg_type}",
-                }))
-
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            await _handle_client_message(message, websocket)
     except WebSocketDisconnect:
-        pass
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
+        print(f"[Server] Client disconnected ({len(connected_clients)} total)")
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        _clients.discard(ws)
-        logger.info(f"WebSocket client disconnected. Total: {len(_clients)}")
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
+        print(f"[Server] WebSocket error: {e}")
 
 
-async def _handle_voice_transcript(ws: WebSocket, msg: dict) -> None:
-    """Process a voice transcript from browser STT."""
-    text = msg.get("text", "")
-    confidence = msg.get("confidence", 1.0)
+async def _handle_client_message(message: dict, websocket: WebSocket):
+    """Handle incoming messages from frontend clients."""
+    msg_type = message.get("type", "")
 
-    parsed = voice_service.process_transcript(text, confidence)
+    if msg_type == "voice_transcript":
+        text = message.get("text", "")
+        confidence = message.get("confidence", 1.0)
+        if text:
+            await _control_loop.push_voice_command(text, confidence)
+            await broadcast({
+                "type": "command_log",
+                "source": "voice",
+                "text": text,
+                "action": "VOICE_INPUT",
+                "timestamp": time.time(),
+            })
 
-    if parsed:
-        feedback = voice_service.tts.acknowledge_voice_command(
-            f"{parsed.action}" + (f" on {parsed.robot_id}" if parsed.robot_id else "")
-        )
+    elif msg_type == "manual_command":
+        action = message.get("action", "")
+        if action:
+            await _control_loop.push_manual_command(action)
+            await broadcast({
+                "type": "command_log",
+                "source": "manual",
+                "action": action,
+                "timestamp": time.time(),
+            })
 
-        if parsed.command_type == "direct_override":
-            simulation_service.send_action(parsed.action)
-
-        response = {
-            "type": "voice_command_parsed",
-            "action": parsed.action,
-            "command_type": parsed.command_type,
-            "robot_id": parsed.robot_id,
-            "target": parsed.target,
-            "item": parsed.item,
+    elif msg_type == "reset":
+        _control_loop.state_machine.reset()
+        await broadcast({
+            "type": "state_update",
+            "gear": "NEUTRAL",
+            "action": "IDLE",
+            "action_source": "idle",
+            "brain_class": None,
+            "brain_confidence": 0,
+            "brain_gated": True,
+            "holding_item": False,
+            "robot_state": _control_loop.sim.get_state(),
+            "latency_ms": 0,
             "timestamp": time.time(),
-        }
+        })
 
-        if feedback and feedback.get("audio_base64"):
-            response["tts_audio"] = {
-                "audio_base64": feedback["audio_base64"],
-                "text": feedback["text"],
-                "event_type": feedback["event_type"],
-            }
-
-        await ws.send_text(json.dumps(response))
-    else:
-        feedback = voice_service.tts.announce_unclear()
-        response = {
-            "type": "voice_command_unrecognized",
-            "text": text,
+    elif msg_type == "toggle_test_mode":
+        _control_loop.set_test_mode(not _control_loop._test_mode)
+        await broadcast({
+            "type": "test_mode_update",
+            "enabled": _control_loop._test_mode,
             "timestamp": time.time(),
-        }
-        if feedback and feedback.get("audio_base64"):
-            response["tts_audio"] = {
-                "audio_base64": feedback["audio_base64"],
-                "text": feedback["text"],
-                "event_type": feedback["event_type"],
-            }
-        await ws.send_text(json.dumps(response))
+        })
 
+    elif msg_type == "toggle_brain":
+        _control_loop.brain_enabled = not _control_loop.brain_enabled
+        await broadcast({
+            "type": "input_toggle_update",
+            "brain_enabled": _control_loop.brain_enabled,
+            "voice_enabled": _control_loop.voice_enabled,
+            "timestamp": time.time(),
+        })
 
-async def _handle_action(ws: WebSocket, msg: dict) -> None:
-    """Handle a direct action command (from dashboard buttons, etc.)."""
-    action = msg.get("action", "STOP")
-    simulation_service.send_action(action)
+    elif msg_type == "toggle_voice":
+        _control_loop.voice_enabled = not _control_loop.voice_enabled
+        await broadcast({
+            "type": "input_toggle_update",
+            "brain_enabled": _control_loop.brain_enabled,
+            "voice_enabled": _control_loop.voice_enabled,
+            "timestamp": time.time(),
+        })
 
-    feedback = voice_service.tts.announce_brain_command(action)
+    elif msg_type == "full_reset":
+        _control_loop.full_reset()
+        await broadcast({
+            "type": "full_reset_ack",
+            "timestamp": time.time(),
+        })
+        await broadcast({
+            "type": "state_update",
+            "gear": "NEUTRAL",
+            "action": "IDLE",
+            "action_source": "idle",
+            "brain_class": None,
+            "brain_confidence": 0,
+            "brain_gated": True,
+            "holding_item": False,
+            "robot_state": _control_loop.sim.get_state(),
+            "latency_ms": 0,
+            "timestamp": time.time(),
+        })
 
-    response = {
-        "type": "action_executed",
-        "action": action,
-        "timestamp": time.time(),
-    }
-    if feedback and feedback.get("audio_base64"):
-        response["tts_audio"] = {
-            "audio_base64": feedback["audio_base64"],
-            "text": feedback["text"],
-            "event_type": feedback["event_type"],
-        }
-    await ws.send_text(json.dumps(response))
+    elif msg_type == "set_gear":
+        from backend.state_machine import Gear
+        gear_str = message.get("gear", "NEUTRAL")
+        try:
+            gear = Gear(gear_str)
+            _control_loop.state_machine.set_gear(gear)
+        except ValueError:
+            pass

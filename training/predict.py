@@ -47,10 +47,12 @@ class BrainDecoder:
         self.label_names = LABEL_NAMES_BINARY if binary else LABEL_NAMES
         self.num_classes = len(self.label_names)
 
-        # Initialize ONNX session
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        # Initialize ONNX session — only request CUDA if its DLLs are actually loadable
         available = ort.get_available_providers()
-        use_providers = [p for p in providers if p in available]
+        if "CUDAExecutionProvider" in available:
+            use_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        else:
+            use_providers = ["CPUExecutionProvider"]
         self.session = ort.InferenceSession(model_path, providers=use_providers)
         self.input_name = self.session.get_inputs()[0].name
 

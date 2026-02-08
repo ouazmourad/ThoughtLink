@@ -10,8 +10,8 @@ import numpy as np
 from .state_machine import GearStateMachine, RobotAction
 from .command_fusion import CommandFusion
 from .sim_bridge import SimBridge
-from .eeg_source import EEGReplaySource, SyntheticEEGSource
-from .voice_parser import parse_voice_transcript
+from .eeg_source import EEGReplaySource, TestEEGSource
+from voice.command_parser import CommandParser
 from .config import (
     EEG_DATA_DIR,
     TICK_INTERVAL,
@@ -36,20 +36,39 @@ except ImportError:
     print("[ControlLoop] BrainDecoder not available — using demo mode")
 
 
+    # Map CommandParser action names to CommandFusion action names
+_VOICE_ACTION_MAP = {
+    "FORWARD": "MOVE_FORWARD",
+    "BACKWARD": "MOVE_BACKWARD",
+    "LEFT": "ROTATE_LEFT",
+    "RIGHT": "ROTATE_RIGHT",
+    "STOP_ALL": "STOP",
+}
+
+
 class ControlLoop:
     def __init__(self, broadcast_fn):
         self.broadcast = broadcast_fn
         self.state_machine = GearStateMachine()
         self.fusion = CommandFusion(self.state_machine)
         self.sim = SimBridge()
+        self._voice_parser = CommandParser()
 
         # Initialize EEG source
         try:
             self.eeg_source = EEGReplaySource(EEG_DATA_DIR)
             if not self.eeg_source.ready:
-                self.eeg_source = SyntheticEEGSource()
+                self.eeg_source = None
         except Exception:
-            self.eeg_source = SyntheticEEGSource()
+            self.eeg_source = None
+
+        # Input enable flags
+        self.brain_enabled = True
+        self.voice_enabled = True
+
+        # Test mode
+        self._test_mode = False
+        self._test_eeg_source = None
 
         # Voice command queue
         self._voice_queue: list[dict] = []
@@ -86,67 +105,91 @@ class ControlLoop:
 
     async def push_voice_command(self, transcript: str, confidence: float = 1.0):
         """Queue a voice transcript for processing on next tick."""
-        parsed = parse_voice_transcript(transcript)
+        parsed = self._voice_parser.parse(transcript, confidence)
         if parsed:
+            action = _VOICE_ACTION_MAP.get(parsed.action, parsed.action)
             async with self._voice_lock:
-                self._voice_queue.append(parsed)
+                self._voice_queue.append({
+                    "command_type": parsed.command_type,
+                    "action": action,
+                    "raw_text": parsed.raw_text,
+                })
 
     async def push_manual_command(self, action_str: str):
-        """Inject a manual command into the fusion pipeline (same path as voice/brain)."""
+        """Inject a manual command — executes directly, bypasses voice/fusion pipeline."""
         if action_str == "SHIFT_GEAR":
             self.state_machine.shift_gear()
             return
         if action_str == "BOTH_FISTS":
-            # Gear-dependent: resolve through state machine like a real brain signal
             action = self.state_machine.resolve_brain_command("Both Fists")
-            self.sim.execute(action)
-            self.state_machine.state.current_action = action
+        else:
+            action_map = {
+                "MOVE_FORWARD": RobotAction.MOVE_FORWARD,
+                "MOVE_BACKWARD": RobotAction.MOVE_BACKWARD,
+                "ROTATE_LEFT": RobotAction.ROTATE_LEFT,
+                "ROTATE_RIGHT": RobotAction.ROTATE_RIGHT,
+                "STOP": RobotAction.STOP,
+                "GRAB": RobotAction.GRAB,
+                "RELEASE": RobotAction.RELEASE,
+            }
+            action = action_map.get(action_str, RobotAction.IDLE)
+        self.sim.execute(action)
+        self.state_machine.state.current_action = action
+
+    def set_test_mode(self, enabled: bool):
+        """Enable/disable test EEG mode. Requires ONNX model loaded."""
+        if enabled and not self._brain_decoder:
+            print("[ControlLoop] Cannot enable test mode — no ONNX model loaded")
             return
-        # For direct actions, push as a synthetic voice command through fusion
-        synthetic = {
-            "command_type": "direct_override",
-            "action": action_str,
-            "raw_text": f"[manual] {action_str}",
-        }
-        async with self._voice_lock:
-            self._voice_queue.append(synthetic)
+        self._test_mode = enabled
+        if enabled:
+            self._test_eeg_source = TestEEGSource()
+            print("[ControlLoop] Test mode ON — synthetic EEG through real classifier")
+        else:
+            self._test_eeg_source = None
+            print("[ControlLoop] Test mode OFF")
+
+    def full_reset(self):
+        """Reset all subsystems to initial state."""
+        self.state_machine.reset()
+        self.sim.reset()
+        self._voice_queue.clear()
+        if self.eeg_source:
+            self.eeg_source.reset()
+        if self._test_eeg_source:
+            self._test_eeg_source.reset()
+        if self._brain_decoder:
+            self._brain_decoder.reset()
+        self.fusion.voice_override_until = 0.0
+        self.latencies.clear()
+        self.tick_count = 0
+        print("[ControlLoop] Full reset complete")
 
     async def tick(self):
         """Single tick of the control loop."""
         tick_start = time.time()
 
         # 1. Get EEG prediction
-        eeg_window = self.eeg_source.get_latest_window()
+        source = self._test_eeg_source if self._test_mode else self.eeg_source
+        eeg_window = source.get_latest_window() if source else None
         brain_result = None
 
-        if eeg_window is not None:
-            if self._brain_decoder:
-                # Use Joshua's real BrainDecoder
-                try:
-                    brain_result = self._brain_decoder.predict(eeg_window)
-                except Exception as e:
-                    print(f"[ControlLoop] Brain decoder error: {e}")
-            else:
-                # Demo mode: simulate prediction from EEG label
-                label = self.eeg_source.get_current_label()
-                label_idx = LABEL_MAP.get(label, 4)
-                command = BRAIN_LABEL_TO_COMMAND.get(label_idx, "STOP")
-                confidence = 0.75 + 0.2 * np.random.random()
-                gated = confidence < CONFIDENCE_THRESHOLD
+        if eeg_window is not None and self._brain_decoder:
+            try:
+                brain_result = self._brain_decoder.predict(eeg_window)
+            except Exception as e:
+                print(f"[ControlLoop] Brain decoder error: {e}")
 
-                brain_result = {
-                    "class": label,
-                    "label": label,
-                    "confidence": float(confidence),
-                    "command": command,
-                    "stable_command": command if not gated else "IDLE",
-                    "gated": gated,
-                }
+        # Gate brain result if brain input is disabled
+        if not self.brain_enabled:
+            brain_result = None
 
         # 2. Get voice command (non-blocking)
         voice_command = None
         async with self._voice_lock:
-            if self._voice_queue:
+            if not self.voice_enabled:
+                self._voice_queue.clear()
+            elif self._voice_queue:
                 voice_command = self._voice_queue.pop(0)
 
         # 3. Fuse commands

@@ -91,9 +91,15 @@ class EEGReplaySource:
             return self.current_label.get("label", "unknown")
         return str(self.current_label) if self.current_label else "unknown"
 
+    def reset(self):
+        self.current_file_idx = 0
+        self.current_sample = 0
+        if self.files:
+            self._load_next_file()
 
-class SyntheticEEGSource:
-    """Generates synthetic EEG data when no real data is available."""
+
+class TestEEGSource:
+    """Generates class-specific synthetic EEG that goes through the real ONNX classifier."""
 
     def __init__(self):
         self.window_size = WINDOW_SIZE_SAMPLES
@@ -103,16 +109,24 @@ class SyntheticEEGSource:
         self.current_class_idx = 0
         self.ticks_per_class = 50  # switch class every 5 seconds at 10Hz
         self.ready = True
-        print("[EEGSource] Using synthetic EEG data")
+        # Class-specific base frequencies per channel
+        self._class_freqs = [
+            [8, 10, 12, 14, 16, 18],   # class 0: Right Fist
+            [9, 11, 13, 15, 17, 19],   # class 1: Left Fist
+            [10, 14, 18, 22, 26, 30],  # class 2: Both Fists
+            [12, 16, 20, 24, 28, 32],  # class 3: Tongue Tapping
+            [6, 8, 10, 12, 14, 16],    # class 4: Relax
+        ]
+        print("[EEGSource] TestEEGSource active — synthetic data through real classifier")
 
     def get_latest_window(self) -> np.ndarray:
-        """Generate a synthetic (500, 6) EEG window."""
+        """Generate a (500, 6) EEG window with class-specific frequency patterns."""
         t = np.linspace(0, 1, self.window_size)
+        freqs = self._class_freqs[self.current_class_idx]
         channels = []
         for ch in range(self.n_channels):
-            freq = 8 + ch * 2 + self.current_class_idx * 3
             amplitude = 0.5 + self.current_class_idx * 0.2
-            signal = amplitude * np.sin(2 * np.pi * freq * t)
+            signal = amplitude * np.sin(2 * np.pi * freqs[ch] * t)
             signal += 0.1 * np.random.randn(self.window_size)
             channels.append(signal)
 
@@ -124,3 +138,7 @@ class SyntheticEEGSource:
 
     def get_current_label(self) -> str:
         return self.classes[self.current_class_idx]
+
+    def reset(self):
+        self.tick = 0
+        self.current_class_idx = 0
