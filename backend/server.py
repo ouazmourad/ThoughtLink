@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from .state_machine import Gear
 from .control_loop import ControlLoop
 from .config import HOST, PORT
+from .scene_parser import get_default_map
 
 app = FastAPI(title="ThoughtLink", version="1.0.0")
 
@@ -188,12 +189,23 @@ async def get_server_info():
     })
 
 
+@app.get("/api/map")
+async def get_map():
+    """Return parsed 2D map data from the MuJoCo scene XML."""
+    return JSONResponse(get_default_map())
+
+
 # --- Static Files ---
 
 @app.get("/")
 async def serve_index():
     return FileResponse(os.path.join(frontend_dir, "index.html"))
 
+
+# Serve simulation scene files so frontend can parse the XML directly
+scenes_dir = os.path.join(os.path.dirname(__file__), "..", "simulation", "scenes")
+if os.path.exists(scenes_dir):
+    app.mount("/scenes", StaticFiles(directory=scenes_dir), name="scenes")
 
 # Mount static files after routes so API routes take priority
 if os.path.exists(frontend_dir):
