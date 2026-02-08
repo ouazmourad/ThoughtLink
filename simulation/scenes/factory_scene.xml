@@ -30,6 +30,10 @@
     <material name="conveyor_belt" rgba="0.15 0.15 0.18 1" specular="0.1"/>
     <material name="conveyor_frame" rgba="0.4 0.4 0.42 1" specular="0.2"/>
     <material name="table_top" rgba="0.5 0.5 0.52 1" specular="0.15"/>
+    <!-- Unitree robot materials -->
+    <material name="unitree_dark" rgba="0.12 0.12 0.15 1" specular="0.2" shininess="0.4"/>
+    <material name="unitree_silver" rgba="0.55 0.55 0.58 1" specular="0.35" shininess="0.5"/>
+    <material name="unitree_accent" rgba="0.2 0.2 0.22 1" specular="0.15"/>
   </asset>
 
   <worldbody>
@@ -131,6 +135,75 @@
     <geom name="bollard_2" type="cylinder" size="0.06 0.4" pos="-2 -0.5 0.4" material="safety_stripe"/>
     <geom name="bollard_3" type="cylinder" size="0.06 0.4" pos="2 0.5 0.4" material="safety_stripe"/>
     <geom name="bollard_4" type="cylinder" size="0.06 0.4" pos="2 -0.5 0.4" material="safety_stripe"/>
+
+    <!-- ============ STATIC UNITREE ROBOTS (5 decorative) ============ -->
+
+    <!-- G1 Humanoid #1 — facing Shelf A (rotated 180° around z) -->
+    <body name="static_g1_1" pos="-3.0 -1.0 0" quat="0 0 0 1">
+      <geom name="sg1a_head" type="sphere" size="0.08" pos="0 0 1.32" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1a_torso" type="box" size="0.08 0.1 0.18" pos="0 0 1.0" material="unitree_silver" contype="0" conaffinity="0"/>
+      <geom name="sg1a_pelvis" type="box" size="0.07 0.12 0.06" pos="0 0 0.76" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1a_lleg_u" type="capsule" size="0.045" fromto="0 0.065 0.72 -0.02 0.065 0.38" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1a_lleg_l" type="capsule" size="0.038" fromto="-0.02 0.065 0.38 0 0.065 0.03" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1a_rleg_u" type="capsule" size="0.045" fromto="0 -0.065 0.72 -0.02 -0.065 0.38" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1a_rleg_l" type="capsule" size="0.038" fromto="-0.02 -0.065 0.38 0 -0.065 0.03" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1a_lfoot" type="box" size="0.06 0.03 0.012" pos="0.02 0.065 0.012" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1a_rfoot" type="box" size="0.06 0.03 0.012" pos="0.02 -0.065 0.012" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1a_larm" type="capsule" size="0.028" fromto="0 0.15 1.12 0.04 0.18 0.78" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1a_rarm" type="capsule" size="0.028" fromto="0 -0.15 1.12 0.04 -0.18 0.78" material="unitree_accent" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- G1 Humanoid #2 — at work table (facing +x, default) -->
+    <body name="static_g1_2" pos="1.4 1.8 0">
+      <geom name="sg1b_head" type="sphere" size="0.08" pos="0 0 1.32" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1b_torso" type="box" size="0.08 0.1 0.18" pos="0 0 1.0" material="unitree_silver" contype="0" conaffinity="0"/>
+      <geom name="sg1b_pelvis" type="box" size="0.07 0.12 0.06" pos="0 0 0.76" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1b_lleg_u" type="capsule" size="0.045" fromto="0 0.065 0.72 -0.02 0.065 0.38" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1b_lleg_l" type="capsule" size="0.038" fromto="-0.02 0.065 0.38 0 0.065 0.03" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1b_rleg_u" type="capsule" size="0.045" fromto="0 -0.065 0.72 -0.02 -0.065 0.38" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1b_rleg_l" type="capsule" size="0.038" fromto="-0.02 -0.065 0.38 0 -0.065 0.03" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1b_lfoot" type="box" size="0.06 0.03 0.012" pos="0.02 0.065 0.012" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1b_rfoot" type="box" size="0.06 0.03 0.012" pos="0.02 -0.065 0.012" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1b_larm" type="capsule" size="0.028" fromto="0 0.15 1.12 0.04 0.18 0.78" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1b_rarm" type="capsule" size="0.028" fromto="0 -0.15 1.12 0.04 -0.18 0.78" material="unitree_accent" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- G1 Humanoid #3 — near back wall on patrol (facing +y) -->
+    <body name="static_g1_3" pos="3.0 -4.5 0" quat="0.707 0 0 0.707">
+      <geom name="sg1c_head" type="sphere" size="0.08" pos="0 0 1.32" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1c_torso" type="box" size="0.08 0.1 0.18" pos="0 0 1.0" material="unitree_silver" contype="0" conaffinity="0"/>
+      <geom name="sg1c_pelvis" type="box" size="0.07 0.12 0.06" pos="0 0 0.76" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1c_lleg_u" type="capsule" size="0.045" fromto="0 0.065 0.72 -0.02 0.065 0.38" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1c_lleg_l" type="capsule" size="0.038" fromto="-0.02 0.065 0.38 0 0.065 0.03" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1c_rleg_u" type="capsule" size="0.045" fromto="0 -0.065 0.72 -0.02 -0.065 0.38" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1c_rleg_l" type="capsule" size="0.038" fromto="-0.02 -0.065 0.38 0 -0.065 0.03" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1c_lfoot" type="box" size="0.06 0.03 0.012" pos="0.02 0.065 0.012" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1c_rfoot" type="box" size="0.06 0.03 0.012" pos="0.02 -0.065 0.012" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="sg1c_larm" type="capsule" size="0.028" fromto="0 0.15 1.12 0.04 0.18 0.78" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="sg1c_rarm" type="capsule" size="0.028" fromto="0 -0.15 1.12 0.04 -0.18 0.78" material="unitree_accent" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- Go2 Quadruped #1 — near Pallet 1 area (facing -x) -->
+    <body name="static_go2_1" pos="-2.8 2.0 0" quat="0 0 0 1">
+      <geom name="go2a_body" type="box" size="0.19 0.065 0.055" pos="0 0 0.33" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="go2a_head" type="box" size="0.05 0.04 0.035" pos="0.22 0 0.35" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="go2a_lidar" type="cylinder" size="0.035 0.02" pos="0.2 0 0.41" material="unitree_silver" contype="0" conaffinity="0"/>
+      <geom name="go2a_fl" type="capsule" size="0.018" fromto="0.15 0.055 0.28 0.15 0.055 0.02" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="go2a_fr" type="capsule" size="0.018" fromto="0.15 -0.055 0.28 0.15 -0.055 0.02" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="go2a_bl" type="capsule" size="0.018" fromto="-0.15 0.055 0.28 -0.15 0.055 0.02" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="go2a_br" type="capsule" size="0.018" fromto="-0.15 -0.055 0.28 -0.15 -0.055 0.02" material="unitree_accent" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- Go2 Quadruped #2 — patrol near conveyor (facing +y) -->
+    <body name="static_go2_2" pos="-1.0 -2.5 0" quat="0.707 0 0 0.707">
+      <geom name="go2b_body" type="box" size="0.19 0.065 0.055" pos="0 0 0.33" material="unitree_dark" contype="0" conaffinity="0"/>
+      <geom name="go2b_head" type="box" size="0.05 0.04 0.035" pos="0.22 0 0.35" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="go2b_lidar" type="cylinder" size="0.035 0.02" pos="0.2 0 0.41" material="unitree_silver" contype="0" conaffinity="0"/>
+      <geom name="go2b_fl" type="capsule" size="0.018" fromto="0.15 0.055 0.28 0.15 0.055 0.02" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="go2b_fr" type="capsule" size="0.018" fromto="0.15 -0.055 0.28 0.15 -0.055 0.02" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="go2b_bl" type="capsule" size="0.018" fromto="-0.15 0.055 0.28 -0.15 0.055 0.02" material="unitree_accent" contype="0" conaffinity="0"/>
+      <geom name="go2b_br" type="capsule" size="0.018" fromto="-0.15 -0.055 0.28 -0.15 -0.055 0.02" material="unitree_accent" contype="0" conaffinity="0"/>
+    </body>
 
     <!-- ============ STATUS LIGHT (floats above robot) ============ -->
     <geom name="status_light" type="sphere" size="0.08" pos="0 0 10" rgba="1 0.9 0 0.8" contype="0" conaffinity="0"/>
